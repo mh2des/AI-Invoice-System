@@ -138,10 +138,7 @@ A production-ready web application that automates supplier invoice processing fo
 │   ├── package.json
 │   └── tailwind.config.ts
 │
-├── Receipt images exampls/         # Sample invoice images for testing
 ├── .gitignore
-├── git-workflow.md                 # Git branching & workflow guide
-├── GEMINI_COST_REPORT.md           # API cost analysis
 └── README.md
 ```
 
@@ -311,8 +308,6 @@ GEMINI_PRIMARY_MODEL=gemini-3.1-flash-lite-preview
 GEMINI_FALLBACK_MODEL=gemini-2.5-flash
 ```
 
-See [GEMINI_COST_REPORT.md](GEMINI_COST_REPORT.md) for detailed cost analysis.
-
 ---
 
 ## Environment Variables
@@ -333,7 +328,7 @@ See [GEMINI_COST_REPORT.md](GEMINI_COST_REPORT.md) for detailed cost analysis.
 
 ## Contributing
 
-This project uses a **feature-based branching** workflow. See [git-workflow.md](git-workflow.md) for the complete guide.
+This project uses a **feature-based branching** workflow.
 
 ```bash
 # Create a feature branch

@@ -75,3 +75,14 @@ frontend/next-env.d.ts
 *.pem
 .vercel
 nul
+
+# ========================
+# Local-only files (not tracked)
+# ========================
+accounting-system-plan.pdf
+data-example.xlsx
+git-workflow.md
+project-idea.md
+FINAL-PLAN.md
+GEMINI_COST_REPORT.md
+Receipt images exampls/
