@@ -3,6 +3,10 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { sendChatMessage, sendChatWithImage } from "@/lib/api";
 import type { ChatMessage } from "@/lib/types";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
+import { ImageIcon, Send, X } from "lucide-react";
 
 export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([
@@ -29,7 +33,6 @@ export default function ChatPage() {
     const text = input.trim();
     if (!text && files.length === 0) return;
 
-    // Build user message with image previews
     const imageUrls: string[] = [];
     for (const f of files) {
       const url = URL.createObjectURL(f);
@@ -49,7 +52,6 @@ export default function ChatPage() {
     setSending(true);
 
     try {
-      // Build history (exclude images, only text)
       const history = messages
         .filter((m) => m.text)
         .map((m) => ({ role: m.role, text: m.text }));
@@ -67,10 +69,7 @@ export default function ChatPage() {
         reply = res.reply;
       }
 
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", text: reply },
-      ]);
+      setMessages((prev) => [...prev, { role: "assistant", text: reply }]);
     } catch (err) {
       console.error(err);
       setMessages((prev) => [
@@ -103,30 +102,31 @@ export default function ChatPage() {
   };
 
   return (
-    <div className="flex flex-col h-[calc(100vh-3.5rem)] md:h-screen">
-      {/* Header */}
-      <div className="border-b border-gray-200 bg-white px-4 md:px-6 py-4">
-        <h1 className="text-lg font-bold text-gray-900">AI Assistant</h1>
-        <p className="text-xs text-gray-500">
+    <div className="flex flex-col h-[calc(100vh-3.5rem)]">
+      <div className="border-b px-4 md:px-6 py-4">
+        <h1 className="text-lg font-bold">AI Assistant</h1>
+        <p className="text-xs text-muted-foreground">
           Chat about invoices, send receipts for analysis
         </p>
       </div>
 
-      {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 md:px-6 py-4 space-y-4">
         {messages.map((msg, i) => (
           <div
             key={i}
-            className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+            className={cn(
+              "flex",
+              msg.role === "user" ? "justify-end" : "justify-start"
+            )}
           >
             <div
-              className={`max-w-[85%] md:max-w-[70%] rounded-2xl px-4 py-3 ${
+              className={cn(
+                "max-w-[85%] md:max-w-[70%] rounded-2xl px-4 py-3",
                 msg.role === "user"
-                  ? "bg-blue-600 text-white"
-                  : "bg-white border border-gray-200 text-gray-900"
-              }`}
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-card border text-card-foreground"
+              )}
             >
-              {/* Images */}
               {msg.images && msg.images.length > 0 && (
                 <div className="flex flex-wrap gap-2 mb-2">
                   {msg.images.map((url, j) => (
@@ -139,29 +139,29 @@ export default function ChatPage() {
                   ))}
                 </div>
               )}
-              {/* Text with markdown-like formatting */}
               <div
-                className={`text-sm whitespace-pre-wrap break-words ${
-                  msg.role === "user" ? "" : "prose prose-sm max-w-none"
-                }`}
+                className={cn(
+                  "text-sm whitespace-pre-wrap break-words",
+                  msg.role === "assistant" && "prose prose-sm max-w-none"
+                )}
                 dangerouslySetInnerHTML={{
-                  __html: msg.role === "assistant"
-                    ? formatMarkdown(msg.text)
-                    : escapeHtml(msg.text),
+                  __html:
+                    msg.role === "assistant"
+                      ? formatMarkdown(msg.text)
+                      : escapeHtml(msg.text),
                 }}
               />
             </div>
           </div>
         ))}
 
-        {/* Typing indicator */}
         {sending && (
           <div className="flex justify-start">
-            <div className="bg-white border border-gray-200 rounded-2xl px-4 py-3">
+            <div className="bg-card border rounded-2xl px-4 py-3">
               <div className="flex items-center gap-1">
-                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
-                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
-                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" />
+                <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce [animation-delay:-0.3s]" />
+                <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce [animation-delay:-0.15s]" />
+                <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" />
               </div>
             </div>
           </div>
@@ -170,27 +170,24 @@ export default function ChatPage() {
         <div ref={messagesEndRef} />
       </div>
 
-      {/* File preview */}
       {files.length > 0 && (
-        <div className="px-4 md:px-6 py-2 border-t border-gray-100 bg-gray-50">
+        <div className="px-4 md:px-6 py-2 border-t bg-muted/50">
           <div className="flex flex-wrap gap-2">
             {files.map((f, i) => (
               <div
                 key={i}
-                className="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-1.5"
+                className="flex items-center gap-2 bg-card border rounded-lg px-3 py-1.5"
               >
-                <span className="text-sm">🖼️</span>
-                <span className="text-xs text-gray-700 truncate max-w-[120px]">
-                  {f.name}
-                </span>
-                <span className="text-xs text-gray-400">
+                <ImageIcon className="h-4 w-4 text-muted-foreground" />
+                <span className="text-xs truncate max-w-[120px]">{f.name}</span>
+                <span className="text-xs text-muted-foreground">
                   {formatSize(f.size)}
                 </span>
                 <button
                   onClick={() => removeFile(i)}
-                  className="text-gray-400 hover:text-red-500 text-xs ml-1"
+                  className="text-muted-foreground hover:text-destructive ml-1"
                 >
-                  ✕
+                  <X className="h-3 w-3" />
                 </button>
               </div>
             ))}
@@ -198,25 +195,17 @@ export default function ChatPage() {
         </div>
       )}
 
-      {/* Input */}
-      <div className="border-t border-gray-200 bg-white px-4 md:px-6 py-3">
+      <div className="border-t px-4 md:px-6 py-3">
         <div className="flex items-end gap-2">
-          {/* Image upload button */}
-          <button
+          <Button
+            variant="ghost"
+            size="icon"
             onClick={() => fileInputRef.current?.click()}
             disabled={sending}
-            className="text-gray-400 hover:text-gray-600 p-2 rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50 flex-shrink-0"
-            title="Attach image"
+            className="flex-shrink-0"
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
-              />
-            </svg>
-          </button>
+            <ImageIcon className="h-5 w-5" />
+          </Button>
           <input
             ref={fileInputRef}
             type="file"
@@ -231,16 +220,14 @@ export default function ChatPage() {
             className="hidden"
           />
 
-          {/* Text input */}
-          <textarea
+          <Textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Ask about invoices, or send a receipt image…"
             rows={1}
             disabled={sending}
-            className="flex-1 resize-none border border-gray-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 max-h-32"
-            style={{ minHeight: "42px" }}
+            className="flex-1 resize-none min-h-[42px] max-h-32 rounded-xl"
             onInput={(e) => {
               const target = e.target as HTMLTextAreaElement;
               target.style.height = "auto";
@@ -248,39 +235,32 @@ export default function ChatPage() {
             }}
           />
 
-          {/* Send button */}
-          <button
+          <Button
+            size="icon"
             onClick={handleSend}
             disabled={sending || (!input.trim() && files.length === 0)}
-            className="bg-blue-600 text-white p-2.5 rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex-shrink-0"
-            title="Send"
+            className="flex-shrink-0 rounded-xl"
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
-              />
-            </svg>
-          </button>
+            <Send className="h-5 w-5" />
+          </Button>
         </div>
       </div>
     </div>
   );
 }
 
-/** Simple markdown-to-HTML for assistant messages. */
 function formatMarkdown(text: string): string {
   return escapeHtml(text)
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
     .replace(/\*(.+?)\*/g, "<em>$1</em>")
-    .replace(/`(.+?)`/g, '<code class="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">$1</code>')
+    .replace(
+      /`(.+?)`/g,
+      '<code class="bg-muted px-1 py-0.5 rounded text-xs font-mono">$1</code>'
+    )
     .replace(/^• /gm, "• ")
     .replace(/\n/g, "<br/>");
 }
 
-/** Escape HTML entities. */
 function escapeHtml(text: string): string {
   return text
     .replace(/&/g, "&amp;")
