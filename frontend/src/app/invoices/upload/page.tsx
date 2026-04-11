@@ -3,6 +3,11 @@
 import { useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { uploadInvoice } from "@/lib/api";
+import { PageHeader } from "@/components/page-header";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Upload, FileText, Image, X, Loader2 } from "lucide-react";
 
 export default function UploadInvoicePage() {
   const router = useRouter();
@@ -79,15 +84,15 @@ export default function UploadInvoicePage() {
 
   return (
     <div className="p-4 md:p-8 max-w-2xl">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Upload Invoice</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          Upload invoice images or PDF. AI will extract items automatically.
-        </p>
-      </div>
+      <PageHeader
+        title="Upload Invoice"
+        description="Upload invoice images or PDF. AI will extract items automatically."
+      />
 
-      {/* Drop zone */}
-      <div
+      <Card
+        className={`cursor-pointer transition-colors ${
+          dragOver ? "border-primary bg-primary/5" : ""
+        }`}
         onDragOver={(e) => {
           e.preventDefault();
           setDragOver(true);
@@ -95,98 +100,101 @@ export default function UploadInvoicePage() {
         onDragLeave={() => setDragOver(false)}
         onDrop={handleDrop}
         onClick={() => fileInputRef.current?.click()}
-        className={`border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-colors ${
-          dragOver
-            ? "border-blue-500 bg-blue-50"
-            : "border-gray-300 hover:border-gray-400 bg-white"
-        }`}
       >
-        <div className="text-4xl mb-3">📤</div>
-        <p className="text-sm font-medium text-gray-700">
-          Drag & drop files here, or click to browse
-        </p>
-        <p className="text-xs text-gray-400 mt-1">
-          JPEG, PNG, WebP, GIF, TIFF, or PDF — max 20MB each
-        </p>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/*,application/pdf"
-          multiple
-          onChange={(e) => {
-            if (e.target.files) addFiles(e.target.files);
-            e.target.value = "";
-          }}
-          className="hidden"
-        />
-      </div>
+        <CardContent className="flex flex-col items-center justify-center py-12">
+          <Upload className="h-10 w-10 text-muted-foreground mb-3" />
+          <p className="text-sm font-medium">
+            Drag & drop files here, or click to browse
+          </p>
+          <p className="text-xs text-muted-foreground mt-1">
+            JPEG, PNG, WebP, GIF, TIFF, or PDF — max 20MB each
+          </p>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*,application/pdf"
+            multiple
+            onChange={(e) => {
+              if (e.target.files) addFiles(e.target.files);
+              e.target.value = "";
+            }}
+            className="hidden"
+          />
+        </CardContent>
+      </Card>
 
-      {/* File list */}
       {files.length > 0 && (
         <div className="mt-4 space-y-2">
           {files.map((f, i) => (
             <div
               key={`${f.name}-${i}`}
-              className="flex items-center justify-between bg-white border border-gray-200 rounded-lg px-4 py-2"
+              className="flex items-center justify-between border rounded-lg px-4 py-2"
             >
               <div className="flex items-center gap-3 min-w-0">
-                <span className="text-lg">
-                  {f.type === "application/pdf" ? "📄" : "🖼️"}
-                </span>
+                {f.type === "application/pdf" ? (
+                  <FileText className="h-5 w-5 text-muted-foreground flex-shrink-0" />
+                ) : (
+                  <Image className="h-5 w-5 text-muted-foreground flex-shrink-0" />
+                )}
                 <div className="min-w-0">
-                  <p className="text-sm text-gray-900 truncate">{f.name}</p>
-                  <p className="text-xs text-gray-400">{formatSize(f.size)}</p>
+                  <p className="text-sm truncate">{f.name}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {formatSize(f.size)}
+                  </p>
                 </div>
               </div>
-              <button
-                onClick={() => removeFile(i)}
-                className="text-gray-400 hover:text-red-500 text-sm ml-2"
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  removeFile(i);
+                }}
               >
-                ✕
-              </button>
+                <X className="h-4 w-4" />
+              </Button>
             </div>
           ))}
         </div>
       )}
 
-      {/* Error */}
       {error && (
-        <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
-          {error}
-        </div>
+        <Alert variant="destructive" className="mt-4">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
       )}
 
-      {/* Actions */}
       <div className="mt-6 flex gap-3">
-        <button
+        <Button
           onClick={handleUpload}
           disabled={files.length === 0 || uploading}
-          className="bg-blue-600 text-white px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
-          {uploading ? "Uploading & Processing…" : `Upload ${files.length} file${files.length !== 1 ? "s" : ""}`}
-        </button>
-        <button
-          onClick={() => router.push("/invoices")}
-          className="text-gray-600 hover:text-gray-900 px-4 py-2.5 text-sm transition-colors"
-        >
+          {uploading ? (
+            <>
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              Uploading & Processing…
+            </>
+          ) : (
+            `Upload ${files.length} file${files.length !== 1 ? "s" : ""}`
+          )}
+        </Button>
+        <Button variant="ghost" onClick={() => router.push("/invoices")}>
           Cancel
-        </button>
+        </Button>
       </div>
 
       {uploading && (
-        <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-          <div className="flex items-center gap-3">
-            <div className="animate-spin h-5 w-5 border-2 border-blue-600 border-t-transparent rounded-full" />
-            <div>
-              <p className="text-sm font-medium text-blue-800">
-                Processing invoice…
-              </p>
-              <p className="text-xs text-blue-600 mt-0.5">
-                AI extraction runs in the background. You&apos;ll be redirected to the invoice detail page.
-              </p>
-            </div>
-          </div>
-        </div>
+        <Alert className="mt-4 border-blue-200 bg-blue-50">
+          <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
+          <AlertDescription className="text-blue-800">
+            <span className="font-medium">Processing invoice…</span>
+            <br />
+            <span className="text-xs text-blue-600">
+              AI extraction runs in the background. You&apos;ll be redirected to
+              the invoice detail page.
+            </span>
+          </AlertDescription>
+        </Alert>
       )}
     </div>
   );

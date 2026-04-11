@@ -3,6 +3,18 @@
 import { useEffect, useState } from "react";
 import { getDashboardStats } from "@/lib/api";
 import type { DashboardStats } from "@/lib/types";
+import { Card, CardContent } from "@/components/ui/card";
+import { PageHeader } from "@/components/page-header";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  FileText,
+  CheckCircle2,
+  Clock,
+  AlertCircle,
+  Target,
+  Package,
+  Building2,
+} from "lucide-react";
 
 export default function Home() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
@@ -15,66 +27,79 @@ export default function Home() {
     {
       label: "Total Invoices",
       value: stats?.total_invoices ?? "—",
+      icon: FileText,
       color: "text-blue-600",
-      bg: "bg-blue-50",
     },
     {
       label: "Invoices Done",
       value: stats?.invoices_done ?? "—",
+      icon: CheckCircle2,
       color: "text-green-600",
-      bg: "bg-green-50",
     },
     {
       label: "Pending",
       value: stats?.invoices_pending ?? "—",
+      icon: Clock,
       color: "text-amber-600",
-      bg: "bg-amber-50",
     },
     {
       label: "Failed",
       value: stats?.invoices_failed ?? "—",
+      icon: AlertCircle,
       color: "text-red-600",
-      bg: "bg-red-50",
     },
     {
       label: "Match Rate",
       value: stats ? `${stats.match_rate}%` : "—",
+      icon: Target,
       color: "text-purple-600",
-      bg: "bg-purple-50",
     },
     {
       label: "Products in DB",
       value: stats?.total_products ?? "—",
+      icon: Package,
       color: "text-indigo-600",
-      bg: "bg-indigo-50",
     },
     {
       label: "Suppliers",
       value: stats?.total_suppliers ?? "—",
+      icon: Building2,
       color: "text-teal-600",
-      bg: "bg-teal-50",
     },
   ];
 
   return (
-    <div className="p-8">
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          AI Invoice Processing System — Overview
-        </p>
-      </div>
+    <div className="p-4 md:p-8">
+      <PageHeader
+        title="Dashboard"
+        description="AI Invoice Processing System — Overview"
+      />
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {cards.map((card) => (
-          <div
-            key={card.label}
-            className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm"
-          >
-            <p className={`text-3xl font-bold ${card.color}`}>{card.value}</p>
-            <p className="text-sm text-gray-500 mt-1">{card.label}</p>
-          </div>
-        ))}
+        {stats === null
+          ? Array.from({ length: 7 }).map((_, i) => (
+              <Card key={i}>
+                <CardContent className="p-5">
+                  <Skeleton className="h-8 w-16 mb-2" />
+                  <Skeleton className="h-4 w-24" />
+                </CardContent>
+              </Card>
+            ))
+          : cards.map((card) => (
+              <Card key={card.label}>
+                <CardContent className="p-5">
+                  <div className="flex items-center justify-between mb-2">
+                    <card.icon className={`h-5 w-5 ${card.color}`} />
+                  </div>
+                  <p className={`text-3xl font-bold ${card.color}`}>
+                    {card.value}
+                  </p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    {card.label}
+                  </p>
+                </CardContent>
+              </Card>
+            ))}
       </div>
     </div>
   );

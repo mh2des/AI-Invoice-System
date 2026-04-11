@@ -4,12 +4,40 @@ import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { getInvoices, deleteInvoice, getSuppliers } from "@/lib/api";
 import type { Invoice, Supplier } from "@/lib/types";
+import { PageHeader } from "@/components/page-header";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Card, CardContent } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Plus, Eye, Trash2, RefreshCw } from "lucide-react";
 
-const STATUS_CHIP: Record<string, { label: string; bg: string; text: string }> = {
-  pending: { label: "Pending", bg: "bg-yellow-100", text: "text-yellow-800" },
-  processing: { label: "Processing", bg: "bg-blue-100", text: "text-blue-800" },
-  done: { label: "Done", bg: "bg-green-100", text: "text-green-800" },
-  failed: { label: "Failed", bg: "bg-red-100", text: "text-red-800" },
+const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
+  pending: "outline",
+  processing: "secondary",
+  done: "default",
+  failed: "destructive",
+};
+
+const STATUS_LABEL: Record<string, string> = {
+  pending: "Pending",
+  processing: "Processing",
+  done: "Done",
+  failed: "Failed",
 };
 
 export default function InvoicesPage() {
@@ -61,148 +89,135 @@ export default function InvoicesPage() {
 
   return (
     <div className="p-4 md:p-8">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Invoices</h1>
-          <p className="text-sm text-gray-500 mt-1">
-            {invoices.length} invoice{invoices.length !== 1 ? "s" : ""}
-          </p>
-        </div>
-        <Link
-          href="/invoices/upload"
-          className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
-        >
-          + Upload Invoice
-        </Link>
-      </div>
+      <PageHeader
+        title="Invoices"
+        description={`${invoices.length} invoice${invoices.length !== 1 ? "s" : ""}`}
+      >
+        <Button render={<Link href="/invoices/upload" />}>
+          <Plus className="h-4 w-4 mr-2" />
+          Upload Invoice
+        </Button>
+      </PageHeader>
 
-      {/* Filters */}
       <div className="flex flex-wrap gap-3 mb-4">
-        <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        >
-          <option value="">All Statuses</option>
-          <option value="pending">Pending</option>
-          <option value="processing">Processing</option>
-          <option value="done">Done</option>
-          <option value="failed">Failed</option>
-        </select>
-        <select
-          value={supplierFilter}
-          onChange={(e) => setSupplierFilter(e.target.value)}
-          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        >
-          <option value="">All Suppliers</option>
-          {suppliers.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name}
-            </option>
-          ))}
-        </select>
-        <button
-          onClick={fetchInvoices}
-          className="text-sm text-blue-600 hover:text-blue-800 px-3 py-2"
-        >
+        <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v ?? "__all__")}>
+          <SelectTrigger className="w-[160px]">
+            <SelectValue placeholder="All Statuses" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">All Statuses</SelectItem>
+            <SelectItem value="pending">Pending</SelectItem>
+            <SelectItem value="processing">Processing</SelectItem>
+            <SelectItem value="done">Done</SelectItem>
+            <SelectItem value="failed">Failed</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={supplierFilter} onValueChange={(v) => setSupplierFilter(v ?? "__all__")}>
+          <SelectTrigger className="w-[200px]">
+            <SelectValue placeholder="All Suppliers" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">All Suppliers</SelectItem>
+            {suppliers.map((s) => (
+              <SelectItem key={s.id} value={String(s.id)}>
+                {s.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button variant="ghost" size="sm" onClick={fetchInvoices}>
+          <RefreshCw className="h-4 w-4 mr-1" />
           Refresh
-        </button>
+        </Button>
       </div>
 
-      {/* Table */}
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50 border-b border-gray-200">
-              <tr>
-                <th className="text-left px-4 py-3 font-medium text-gray-600">ID</th>
-                <th className="text-left px-4 py-3 font-medium text-gray-600">Invoice #</th>
-                <th className="text-left px-4 py-3 font-medium text-gray-600">Supplier</th>
-                <th className="text-left px-4 py-3 font-medium text-gray-600">Date</th>
-                <th className="text-right px-4 py-3 font-medium text-gray-600">Total</th>
-                <th className="text-center px-4 py-3 font-medium text-gray-600">Status</th>
-                <th className="text-left px-4 py-3 font-medium text-gray-600">Uploaded</th>
-                <th className="text-center px-4 py-3 font-medium text-gray-600">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
+      <Card>
+        <CardContent className="p-0">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>ID</TableHead>
+                <TableHead>Invoice #</TableHead>
+                <TableHead>Supplier</TableHead>
+                <TableHead>Date</TableHead>
+                <TableHead className="text-right">Total</TableHead>
+                <TableHead className="text-center">Status</TableHead>
+                <TableHead>Uploaded</TableHead>
+                <TableHead className="text-center">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {loading ? (
-                <tr>
-                  <td colSpan={8} className="text-center py-8 text-gray-400">
-                    Loading…
-                  </td>
-                </tr>
+                Array.from({ length: 5 }).map((_, i) => (
+                  <TableRow key={i}>
+                    {Array.from({ length: 8 }).map((_, j) => (
+                      <TableCell key={j}>
+                        <Skeleton className="h-4 w-full" />
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                ))
               ) : invoices.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="text-center py-8 text-gray-400">
+                <TableRow>
+                  <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
                     No invoices found. Upload your first invoice to get started.
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ) : (
-                invoices.map((inv) => {
-                  const chip = STATUS_CHIP[inv.status] || STATUS_CHIP.pending;
-                  return (
-                    <tr
-                      key={inv.id}
-                      className="border-b border-gray-100 hover:bg-gray-50"
-                    >
-                      <td className="px-4 py-3 font-mono text-xs text-gray-500">
-                        {inv.id}
-                      </td>
-                      <td className="px-4 py-3 text-gray-900 font-medium">
-                        <Link
-                          href={`/invoices/${inv.id}`}
-                          className="hover:text-blue-600 hover:underline"
+                invoices.map((inv) => (
+                  <TableRow key={inv.id}>
+                    <TableCell className="font-mono text-xs text-muted-foreground">
+                      {inv.id}
+                    </TableCell>
+                    <TableCell className="font-medium">
+                      <Link
+                        href={`/invoices/${inv.id}`}
+                        className="hover:underline"
+                      >
+                        {inv.invoice_number || "—"}
+                      </Link>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {supplierName(inv.supplier_id)}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {inv.invoice_date || "—"}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {inv.grand_total != null
+                        ? `${inv.currency} ${Number(inv.grand_total).toFixed(2)}`
+                        : "—"}
+                    </TableCell>
+                    <TableCell className="text-center">
+                      <Badge variant={STATUS_VARIANT[inv.status] || "outline"}>
+                        {STATUS_LABEL[inv.status] || inv.status}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground text-xs">
+                      {new Date(inv.created_at).toLocaleDateString()}
+                    </TableCell>
+                    <TableCell className="text-center">
+                      <div className="flex items-center justify-center gap-1">
+                        <Button variant="ghost" size="sm" render={<Link href={`/invoices/${inv.id}`} />}>
+                          <Eye className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleDelete(inv.id)}
+                          className="text-destructive hover:text-destructive"
                         >
-                          {inv.invoice_number || "—"}
-                        </Link>
-                      </td>
-                      <td className="px-4 py-3 text-gray-600">
-                        {supplierName(inv.supplier_id)}
-                      </td>
-                      <td className="px-4 py-3 text-gray-600">
-                        {inv.invoice_date || "—"}
-                      </td>
-                      <td className="px-4 py-3 text-right text-gray-900">
-                        {inv.grand_total != null
-                          ? `${inv.currency} ${Number(inv.grand_total).toFixed(2)}`
-                          : "—"}
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        <span
-                          className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-medium ${chip.bg} ${chip.text}`}
-                        >
-                          {chip.label}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-gray-500 text-xs">
-                        {new Date(inv.created_at).toLocaleDateString()}
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        <div className="flex items-center justify-center gap-2">
-                          <Link
-                            href={`/invoices/${inv.id}`}
-                            className="text-blue-600 hover:text-blue-800 text-xs"
-                          >
-                            View
-                          </Link>
-                          <button
-                            onClick={() => handleDelete(inv.id)}
-                            className="text-red-500 hover:text-red-700 text-xs"
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))
               )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
     </div>
   );
 }
