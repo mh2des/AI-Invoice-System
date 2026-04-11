@@ -1,0 +1,25 @@
+# Core
+fastapi==0.135.3
+uvicorn[standard]==0.44.0
+pydantic-settings==2.13.1
+python-multipart==0.0.26
+
+# Database
+sqlalchemy[asyncio]==2.0.49
+alembic==1.18.4
+asyncpg==0.31.0
+
+# AI  (google-generativeai is deprecated; use the new unified SDK)
+google-genai==1.72.0
+
+# Storage
+boto3==1.42.88
+
+# Processing
+rapidfuzz==3.14.5
+openpyxl==3.1.5
+pillow==12.2.0
+
+# Auth
+python-jose[cryptography]==3.5.0
+passlib[bcrypt]==1.7.4
