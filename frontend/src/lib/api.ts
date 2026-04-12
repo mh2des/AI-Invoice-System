@@ -73,10 +73,11 @@ export async function deleteProduct(id: number) {
   return request<void>(`/products/${id}`, { method: "DELETE" });
 }
 
-export async function importProductsExcel(file: File) {
+export async function importProductsExcel(file: File, replaceAll = false) {
   const formData = new FormData();
   formData.append("file", file);
-  return request<import("./types").ImportResult>("/products/import-excel", {
+  const url = `/products/import-excel${replaceAll ? "?replace_all=true" : ""}`;
+  return request<import("./types").ImportResult>(url, {
     method: "POST",
     body: formData,
   });

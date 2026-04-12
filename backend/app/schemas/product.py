@@ -49,4 +49,5 @@ class ProductImportResult(BaseModel):
     inserted: int
     updated: int
     skipped: int
+    deleted: int = 0          # populated when replace_all=True
     errors: list[str]

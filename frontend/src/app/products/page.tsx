@@ -29,7 +29,16 @@ import {
 import { Card, CardContent } from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Upload, Trash2, CheckCircle2 } from "lucide-react";
+import { Upload, Trash2, CheckCircle2, RefreshCw, AlertTriangle } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { getProductCount } from "@/lib/api";
 
 export default function ProductsPage() {
   const [products, setProducts] = useState<Product[]>([]);
@@ -39,7 +48,10 @@ export default function ProductsPage() {
   const [loading, setLoading] = useState(true);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [importing, setImporting] = useState(false);
+  const [showReplaceConfirm, setShowReplaceConfirm] = useState(false);
+  const [existingCount, setExistingCount] = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
+  const replaceFileRef = useRef<HTMLInputElement>(null);
 
   const fetchProducts = useCallback(async () => {
     setLoading(true);
@@ -84,6 +96,35 @@ export default function ProductsPage() {
     }
   };
 
+  const openReplaceDialog = async () => {
+    try {
+      const { count } = await getProductCount();
+      setExistingCount(count);
+    } catch {
+      setExistingCount(0);
+    }
+    setShowReplaceConfirm(true);
+  };
+
+  const handleReplaceAll = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setShowReplaceConfirm(false);
+    setImporting(true);
+    setImportResult(null);
+    try {
+      const result = await importProductsExcel(file, true);
+      setImportResult(result);
+      fetchProducts();
+    } catch (err) {
+      console.error(err);
+      alert("Replace failed. Check console for details.");
+    } finally {
+      setImporting(false);
+      if (replaceFileRef.current) replaceFileRef.current.value = "";
+    }
+  };
+
   const handleDelete = async (id: number, desc: string) => {
     if (!confirm(`Delete product "${desc}"?`)) return;
     try {
@@ -107,14 +148,29 @@ export default function ProductsPage() {
           accept=".xlsx,.xls"
           onChange={handleImport}
           className="hidden"
-          id="excel-upload"
+        />
+        <input
+          ref={replaceFileRef}
+          type="file"
+          accept=".xlsx,.xls"
+          onChange={handleReplaceAll}
+          className="hidden"
         />
         <Button
+          variant="outline"
           onClick={() => fileRef.current?.click()}
           disabled={importing}
         >
           <Upload className="h-4 w-4 mr-2" />
-          {importing ? "Importing…" : "Import Excel"}
+          {importing ? "Importing…" : "Add / Update"}
+        </Button>
+        <Button
+          variant="destructive"
+          onClick={openReplaceDialog}
+          disabled={importing}
+        >
+          <RefreshCw className="h-4 w-4 mr-2" />
+          Replace Database
         </Button>
       </PageHeader>
 
@@ -123,6 +179,9 @@ export default function ProductsPage() {
           <CheckCircle2 className="h-4 w-4 text-green-600" />
           <AlertTitle className="text-green-800">Import Complete</AlertTitle>
           <AlertDescription className="text-green-700">
+            {importResult.deleted > 0 && (
+              <span>{importResult.deleted} old products removed. </span>
+            )}
             {importResult.inserted} inserted, {importResult.updated} updated,{" "}
             {importResult.skipped} skipped
             {importResult.errors.length > 0 && (
@@ -239,6 +298,40 @@ export default function ProductsPage() {
           </Table>
         </CardContent>
       </Card>
+
+      {/* Replace Database Confirmation Dialog */}
+      <Dialog open={showReplaceConfirm} onOpenChange={setShowReplaceConfirm}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-destructive" />
+              Replace Product Database?
+            </DialogTitle>
+            <DialogDescription className="pt-2 space-y-2">
+              <span className="block">
+                This will <strong>permanently delete all {existingCount} existing products</strong> and
+                replace them with the products from the new file.
+              </span>
+              <span className="block text-muted-foreground text-sm">
+                Invoice history is preserved, but product links on old invoices will be cleared.
+                This action cannot be undone.
+              </span>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setShowReplaceConfirm(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => replaceFileRef.current?.click()}
+            >
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Choose File &amp; Replace
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

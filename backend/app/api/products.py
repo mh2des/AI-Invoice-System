@@ -44,6 +44,7 @@ async def count_products(db: AsyncSession = Depends(get_db)):
 @router.post("/import-excel", response_model=ProductImportResult)
 async def import_products_excel(
     file: UploadFile = File(..., description="POS Excel export file (.xlsx)"),
+    replace_all: bool = Query(False, description="If true, delete all existing products and replace with this file"),
     db: AsyncSession = Depends(get_db),
 ):
     if not file.filename or not file.filename.endswith((".xlsx", ".xls")):
@@ -53,7 +54,7 @@ async def import_products_excel(
     if len(content) > 20 * 1024 * 1024:  # 20MB limit
         raise HTTPException(status_code=400, detail="File too large (max 20MB)")
 
-    result = await import_products_from_excel(content, db)
+    result = await import_products_from_excel(content, db, replace_all=replace_all)
     return result
 
 

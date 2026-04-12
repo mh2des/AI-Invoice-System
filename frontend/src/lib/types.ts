@@ -31,6 +31,7 @@ export interface ImportResult {
   inserted: number;
   updated: number;
   skipped: number;
+  deleted: number;
   errors: string[];
 }
 
