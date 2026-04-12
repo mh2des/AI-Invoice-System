@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
+    # CORS — set to your Vercel frontend URL in production
+    FRONTEND_URL: str = ""
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 

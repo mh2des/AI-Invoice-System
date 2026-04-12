@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import products, invoices, suppliers, reports, dashboard, chat
+from app.core.config import get_settings
 
 
 @asynccontextmanager
@@ -20,16 +21,21 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS — allow Next.js frontend (any localhost port)
+# Build allowed origins list: always allow localhost, add FRONTEND_URL if set
+_settings = get_settings()
+_allowed_origins = [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "http://localhost:3002",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:3001",
+]
+if _settings.FRONTEND_URL:
+    _allowed_origins.append(_settings.FRONTEND_URL.rstrip("/"))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:3001",
-        "http://localhost:3002",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:3001",
-    ],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
