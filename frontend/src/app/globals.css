@@ -44,6 +44,7 @@
 
 @layer base {
   :root {
+    color-scheme: light;
     --background: oklch(1 0 0);
     --foreground: oklch(0.145 0 0);
     --card: oklch(1 0 0);
@@ -116,6 +117,20 @@
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground text-[15px];
   }
+}
+
+/* Icon hover animation */
+.icon-hover {
+  @apply transition-transform duration-200 ease-out;
+}
+.icon-hover:hover {
+  @apply scale-110;
+}
+
+/* Group-based icon hover for buttons/links */
+.group:hover .group-hover\:icon-pop {
+  @apply scale-110;
+  transition: transform 0.2s ease-out;
 }
