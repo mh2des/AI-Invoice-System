@@ -16,7 +16,7 @@ if config.config_file_name is not None:
 
 # Import all models so Alembic can detect them
 from app.db.base import Base
-from app.models import Supplier, Product, Invoice, InvoiceItem  # noqa: F401
+from app.models import Supplier, Product, Invoice, InvoiceItem, ChatSession, ChatMessage  # noqa: F401
 from app.core.config import get_settings
 
 target_metadata = Base.metadata

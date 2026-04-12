@@ -118,4 +118,28 @@ export interface ChatMessage {
 
 export interface ChatResponse {
   reply: string;
+  session_id: number;
+}
+
+export interface SessionSummary {
+  id: number;
+  title: string | null;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  last_message: string | null;
+}
+
+export interface SessionMessage {
+  id: number;
+  role: string;
+  text: string;
+  created_at: string;
+}
+
+export interface SessionDetail {
+  id: number;
+  title: string | null;
+  created_at: string;
+  messages: SessionMessage[];
 }

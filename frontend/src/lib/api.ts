@@ -187,22 +187,25 @@ export async function downloadReport(invoiceId: number) {
 // ── Chat ──
 export async function sendChatMessage(
   message: string,
-  history: { role: string; text: string }[]
+  history: { role: string; text: string }[],
+  sessionId?: number | null
 ) {
   return request<import("./types").ChatResponse>("/chat/", {
     method: "POST",
-    body: JSON.stringify({ message, history }),
+    body: JSON.stringify({ message, history, session_id: sessionId ?? null }),
   });
 }
 
 export async function sendChatWithImage(
   message: string,
   history: { role: string; text: string }[],
-  files: File[]
+  files: File[],
+  sessionId?: number | null
 ) {
   const formData = new FormData();
   formData.append("message", message);
   formData.append("history", JSON.stringify(history));
+  if (sessionId != null) formData.append("session_id", String(sessionId));
   files.forEach((f) => formData.append("files", f));
 
   const res = await fetch(`${API_BASE}/chat/with-image`, {
@@ -215,3 +218,16 @@ export async function sendChatWithImage(
   }
   return res.json() as Promise<import("./types").ChatResponse>;
 }
+
+export async function listChatSessions() {
+  return request<import("./types").SessionSummary[]>("/chat/sessions");
+}
+
+export async function getChatSession(sessionId: number) {
+  return request<import("./types").SessionDetail>(`/chat/sessions/${sessionId}`);
+}
+
+export async function deleteChatSession(sessionId: number) {
+  return request<void>(`/chat/sessions/${sessionId}`, { method: "DELETE" });
+}
+
