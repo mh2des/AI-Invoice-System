@@ -93,7 +93,7 @@ export default function InvoicesPage() {
         title="Invoices"
         description={`${invoices.length} invoice${invoices.length !== 1 ? "s" : ""}`}
       >
-        <Button render={<Link href="/invoices/upload" />}>
+        <Button nativeButton={false} render={<Link href="/invoices/upload" />}>
           <Plus className="h-4 w-4 mr-2" />
           Upload Invoice
         </Button>
@@ -198,7 +198,7 @@ export default function InvoicesPage() {
                     </TableCell>
                     <TableCell className="text-center">
                       <div className="flex items-center justify-center gap-1">
-                        <Button variant="ghost" size="sm" render={<Link href={`/invoices/${inv.id}`} />}>
+                        <Button nativeButton={false} variant="ghost" size="sm" render={<Link href={`/invoices/${inv.id}`} />}>
                           <Eye className="h-4 w-4" />
                         </Button>
                         <Button

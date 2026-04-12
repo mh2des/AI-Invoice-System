@@ -83,15 +83,15 @@ export default function UploadInvoicePage() {
   };
 
   return (
-    <div className="p-4 md:p-8 max-w-2xl">
+    <div className="p-4 md:p-8 max-w-2xl mx-auto">
       <PageHeader
         title="Upload Invoice"
         description="Upload invoice images or PDF. AI will extract items automatically."
       />
 
       <Card
-        className={`cursor-pointer transition-colors ${
-          dragOver ? "border-primary bg-primary/5" : ""
+        className={`cursor-pointer transition-all ${
+          dragOver ? "border-primary bg-primary/5 shadow-md" : "hover:border-primary/30"
         }`}
         onDragOver={(e) => {
           e.preventDefault();
@@ -101,12 +101,12 @@ export default function UploadInvoicePage() {
         onDrop={handleDrop}
         onClick={() => fileInputRef.current?.click()}
       >
-        <CardContent className="flex flex-col items-center justify-center py-12">
-          <Upload className="h-10 w-10 text-muted-foreground mb-3" />
-          <p className="text-sm font-medium">
+        <CardContent className="flex flex-col items-center justify-center py-16">
+          <Upload className="h-12 w-12 text-muted-foreground mb-4 transition-transform duration-200 group-hover:scale-110" />
+          <p className="text-base font-medium">
             Drag & drop files here, or click to browse
           </p>
-          <p className="text-xs text-muted-foreground mt-1">
+          <p className="text-sm text-muted-foreground mt-1.5">
             JPEG, PNG, WebP, GIF, TIFF, or PDF — max 20MB each
           </p>
           <input

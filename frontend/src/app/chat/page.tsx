@@ -6,15 +6,10 @@ import type { ChatMessage } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { ImageIcon, Send, X } from "lucide-react";
+import { ImageIcon, Send, X, Bot, Sparkles, FileText, HelpCircle } from "lucide-react";
 
 export default function ChatPage() {
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      role: "assistant",
-      text: "Hello! I'm your AI accounting assistant. You can:\n\n• **Send me a receipt/invoice image** and I'll analyze it\n• **Ask questions** about your invoices, products, or suppliers\n• **Request summaries** like \"What did I spend this week?\"\n\nHow can I help you today?",
-    },
-  ]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [sending, setSending] = useState(false);
@@ -29,8 +24,8 @@ export default function ChatPage() {
     scrollToBottom();
   }, [messages, scrollToBottom]);
 
-  const handleSend = async () => {
-    const text = input.trim();
+  const handleSend = async (prefill?: string) => {
+    const text = (prefill || input).trim();
     if (!text && files.length === 0) return;
 
     const imageUrls: string[] = [];
@@ -101,93 +96,132 @@ export default function ChatPage() {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
+  const suggestions = [
+    { icon: FileText, label: "Analyze a receipt", prompt: "I want to analyze a receipt" },
+    { icon: HelpCircle, label: "What did I spend this week?", prompt: "What did I spend this week?" },
+    { icon: Sparkles, label: "Summarize my invoices", prompt: "Summarize all my invoices" },
+  ];
+
+  const showWelcome = messages.length === 0;
+
   return (
     <div className="flex flex-col h-[calc(100vh-3.5rem)]">
-      <div className="border-b px-4 md:px-6 py-4">
-        <h1 className="text-lg font-bold">AI Assistant</h1>
-        <p className="text-xs text-muted-foreground">
-          Chat about invoices, send receipts for analysis
-        </p>
-      </div>
+      {/* Messages or Welcome */}
+      <div className="flex-1 overflow-y-auto">
+        {showWelcome ? (
+          <div className="flex flex-col items-center justify-center h-full px-4">
+            <div className="flex items-center justify-center w-16 h-16 rounded-2xl bg-primary/10 mb-5">
+              <Bot className="h-8 w-8 text-primary" />
+            </div>
+            <h1 className="text-2xl font-bold tracking-tight mb-1">Imam</h1>
+            <p className="text-muted-foreground text-base mb-8">
+              Your AI accounting assistant
+            </p>
 
-      <div className="flex-1 overflow-y-auto px-4 md:px-6 py-4 space-y-4">
-        {messages.map((msg, i) => (
-          <div
-            key={i}
-            className={cn(
-              "flex",
-              msg.role === "user" ? "justify-end" : "justify-start"
-            )}
-          >
-            <div
-              className={cn(
-                "max-w-[85%] md:max-w-[70%] rounded-2xl px-4 py-3",
-                msg.role === "user"
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-card border text-card-foreground"
-              )}
-            >
-              {msg.images && msg.images.length > 0 && (
-                <div className="flex flex-wrap gap-2 mb-2">
-                  {msg.images.map((url, j) => (
-                    <img
-                      key={j}
-                      src={url}
-                      alt="Attached"
-                      className="max-w-[200px] max-h-[200px] rounded-lg object-cover"
-                    />
-                  ))}
-                </div>
-              )}
-              <div
-                className={cn(
-                  "text-sm whitespace-pre-wrap break-words",
-                  msg.role === "assistant" && "prose prose-sm max-w-none"
-                )}
-                dangerouslySetInnerHTML={{
-                  __html:
-                    msg.role === "assistant"
-                      ? formatMarkdown(msg.text)
-                      : escapeHtml(msg.text),
-                }}
-              />
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 w-full max-w-xl">
+              {suggestions.map((s) => (
+                <button
+                  key={s.label}
+                  onClick={() => handleSend(s.prompt)}
+                  className="group flex flex-col items-center gap-2 rounded-xl border bg-card p-4 text-center transition-all hover:border-primary/40 hover:shadow-sm"
+                >
+                  <s.icon className="h-5 w-5 text-muted-foreground transition-transform duration-200 group-hover:scale-110" />
+                  <span className="text-sm font-medium">{s.label}</span>
+                </button>
+              ))}
             </div>
           </div>
-        ))}
-
-        {sending && (
-          <div className="flex justify-start">
-            <div className="bg-card border rounded-2xl px-4 py-3">
-              <div className="flex items-center gap-1">
-                <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce [animation-delay:-0.3s]" />
-                <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce [animation-delay:-0.15s]" />
-                <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" />
+        ) : (
+          <div className="px-4 md:px-6 py-4 space-y-5 max-w-3xl mx-auto">
+            {messages.map((msg, i) => (
+              <div
+                key={i}
+                className={cn(
+                  "flex gap-3",
+                  msg.role === "user" ? "justify-end" : "justify-start"
+                )}
+              >
+                {msg.role === "assistant" && (
+                  <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center mt-0.5">
+                    <Bot className="h-4 w-4 text-primary" />
+                  </div>
+                )}
+                <div
+                  className={cn(
+                    "max-w-[80%] md:max-w-[70%] rounded-2xl px-4 py-3",
+                    msg.role === "user"
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-muted/60 text-foreground"
+                  )}
+                >
+                  {msg.images && msg.images.length > 0 && (
+                    <div className="flex flex-wrap gap-2 mb-2">
+                      {msg.images.map((url, j) => (
+                        <img
+                          key={j}
+                          src={url}
+                          alt="Attached"
+                          className="max-w-[200px] max-h-[200px] rounded-lg object-cover"
+                        />
+                      ))}
+                    </div>
+                  )}
+                  {msg.role === "assistant" && i === 0 + (messages[0]?.role === "user" ? 1 : 0) && (
+                    <p className="text-xs font-semibold text-primary mb-1.5">Imam</p>
+                  )}
+                  <div
+                    className="text-[15px] leading-relaxed whitespace-pre-wrap break-words"
+                    dangerouslySetInnerHTML={{
+                      __html:
+                        msg.role === "assistant"
+                          ? formatMarkdown(msg.text)
+                          : escapeHtml(msg.text),
+                    }}
+                  />
+                </div>
               </div>
-            </div>
+            ))}
+
+            {sending && (
+              <div className="flex gap-3 justify-start">
+                <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center mt-0.5">
+                  <Bot className="h-4 w-4 text-primary" />
+                </div>
+                <div className="bg-muted/60 rounded-2xl px-4 py-3">
+                  <p className="text-xs font-semibold text-primary mb-1.5">Imam</p>
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-2 h-2 bg-muted-foreground/60 rounded-full animate-bounce [animation-delay:-0.3s]" />
+                    <div className="w-2 h-2 bg-muted-foreground/60 rounded-full animate-bounce [animation-delay:-0.15s]" />
+                    <div className="w-2 h-2 bg-muted-foreground/60 rounded-full animate-bounce" />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div ref={messagesEndRef} />
           </div>
         )}
-
-        <div ref={messagesEndRef} />
       </div>
 
+      {/* File preview bar */}
       {files.length > 0 && (
-        <div className="px-4 md:px-6 py-2 border-t bg-muted/50">
-          <div className="flex flex-wrap gap-2">
+        <div className="px-4 md:px-6 py-2 border-t bg-muted/30">
+          <div className="flex flex-wrap gap-2 max-w-3xl mx-auto">
             {files.map((f, i) => (
               <div
                 key={i}
                 className="flex items-center gap-2 bg-card border rounded-lg px-3 py-1.5"
               >
                 <ImageIcon className="h-4 w-4 text-muted-foreground" />
-                <span className="text-xs truncate max-w-[120px]">{f.name}</span>
+                <span className="text-sm truncate max-w-[120px]">{f.name}</span>
                 <span className="text-xs text-muted-foreground">
                   {formatSize(f.size)}
                 </span>
                 <button
                   onClick={() => removeFile(i)}
-                  className="text-muted-foreground hover:text-destructive ml-1"
+                  className="text-muted-foreground hover:text-destructive ml-1 transition-colors"
                 >
-                  <X className="h-3 w-3" />
+                  <X className="h-3.5 w-3.5" />
                 </button>
               </div>
             ))}
@@ -195,16 +229,17 @@ export default function ChatPage() {
         </div>
       )}
 
-      <div className="border-t px-4 md:px-6 py-3">
-        <div className="flex items-end gap-2">
+      {/* Input bar */}
+      <div className="border-t px-4 md:px-6 py-3 bg-background">
+        <div className="flex items-end gap-2 max-w-3xl mx-auto">
           <Button
             variant="ghost"
             size="icon"
             onClick={() => fileInputRef.current?.click()}
             disabled={sending}
-            className="flex-shrink-0"
+            className="flex-shrink-0 group"
           >
-            <ImageIcon className="h-5 w-5" />
+            <ImageIcon className="h-5 w-5 transition-transform duration-200 group-hover:scale-110" />
           </Button>
           <input
             ref={fileInputRef}
@@ -224,10 +259,10 @@ export default function ChatPage() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask about invoices, or send a receipt image…"
+            placeholder="Ask Imam about invoices, or send a receipt…"
             rows={1}
             disabled={sending}
-            className="flex-1 resize-none min-h-[42px] max-h-32 rounded-xl"
+            className="flex-1 resize-none min-h-[44px] max-h-32 rounded-xl text-[15px]"
             onInput={(e) => {
               const target = e.target as HTMLTextAreaElement;
               target.style.height = "auto";
@@ -237,11 +272,11 @@ export default function ChatPage() {
 
           <Button
             size="icon"
-            onClick={handleSend}
+            onClick={() => handleSend()}
             disabled={sending || (!input.trim() && files.length === 0)}
-            className="flex-shrink-0 rounded-xl"
+            className="flex-shrink-0 rounded-xl group"
           >
-            <Send className="h-5 w-5" />
+            <Send className="h-5 w-5 transition-transform duration-200 group-hover:scale-110" />
           </Button>
         </div>
       </div>
@@ -255,7 +290,7 @@ function formatMarkdown(text: string): string {
     .replace(/\*(.+?)\*/g, "<em>$1</em>")
     .replace(
       /`(.+?)`/g,
-      '<code class="bg-muted px-1 py-0.5 rounded text-xs font-mono">$1</code>'
+      '<code class="bg-muted px-1.5 py-0.5 rounded text-sm font-mono">$1</code>'
     )
     .replace(/^• /gm, "• ")
     .replace(/\n/g, "<br/>");

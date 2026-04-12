@@ -38,8 +38,8 @@ export function AppSidebar() {
     <Sidebar>
       <SidebarHeader className="border-b border-sidebar-border">
         <div className="px-2 py-3">
-          <h1 className="text-base font-bold">Invoice System</h1>
-          <p className="text-xs text-muted-foreground mt-0.5">
+          <h1 className="text-lg font-bold">Invoice System</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">
             AI-Powered Processing
           </p>
         </div>
@@ -57,8 +57,8 @@ export function AppSidebar() {
                     : pathname.startsWith(item.href);
                 return (
                   <SidebarMenuItem key={item.href}>
-                    <SidebarMenuButton render={<Link href={item.href} />} isActive={isActive}>
-                      <item.icon />
+                    <SidebarMenuButton render={<Link href={item.href} />} isActive={isActive} className="group py-2.5 text-[15px]">
+                      <item.icon className="!size-5 transition-transform duration-200 group-hover:scale-110" />
                       <span>{item.label}</span>
                     </SidebarMenuButton>
                   </SidebarMenuItem>

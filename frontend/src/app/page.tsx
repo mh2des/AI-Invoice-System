@@ -86,15 +86,15 @@ export default function Home() {
               </Card>
             ))
           : cards.map((card) => (
-              <Card key={card.label}>
+              <Card key={card.label} className="group transition-shadow hover:shadow-md">
                 <CardContent className="p-5">
                   <div className="flex items-center justify-between mb-2">
-                    <card.icon className={`h-5 w-5 ${card.color}`} />
+                    <card.icon className={`h-6 w-6 ${card.color} transition-transform duration-200 group-hover:scale-110`} />
                   </div>
                   <p className={`text-3xl font-bold ${card.color}`}>
                     {card.value}
                   </p>
-                  <p className="text-sm text-muted-foreground mt-1">
+                  <p className="text-[15px] text-muted-foreground mt-1">
                     {card.label}
                   </p>
                 </CardContent>
