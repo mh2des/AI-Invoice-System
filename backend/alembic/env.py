@@ -1,5 +1,10 @@
 import asyncio
+import sys
+from pathlib import Path
 from logging.config import fileConfig
+
+# Ensure the backend directory is on sys.path so "app" is importable
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sqlalchemy import pool, create_engine
 from sqlalchemy.ext.asyncio import async_engine_from_config
