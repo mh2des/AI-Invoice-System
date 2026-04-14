@@ -8,6 +8,7 @@ class Settings(BaseSettings):
 
     # Gemini AI
     GEMINI_API_KEY: str = ""
+    GEMINI_API_KEY_2: str = ""  # Optional second key for rotation/fallback
     GEMINI_PRIMARY_MODEL: str = "gemini-3.1-flash-lite-preview"
     GEMINI_FALLBACK_MODEL: str = "gemini-2.5-flash"
 

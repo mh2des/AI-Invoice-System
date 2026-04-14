@@ -5,6 +5,7 @@ products (with barcodes), suppliers, invoices with line items, and analytics.
 Uses intelligent query parsing to enrich context based on user intent.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -22,6 +23,9 @@ from app.models.product import Product
 from app.models.supplier import Supplier
 
 logger = logging.getLogger(__name__)
+
+MAX_RETRIES = 2  # retries per key+model combination
+RETRY_DELAY = 2  # seconds between retries
 
 # ---------------------------------------------------------------------------
 # System prompt — comprehensive, schema-aware, with clear instructions
@@ -358,6 +362,59 @@ async def _query_specific_context(
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _get_api_keys() -> list[str]:
+    """Return all configured, non-empty Gemini API keys."""
+    settings = get_settings()
+    keys = []
+    for k in [settings.GEMINI_API_KEY, settings.GEMINI_API_KEY_2]:
+        if k and k not in ("", "your_gemini_api_key_here"):
+            keys.append(k)
+    return keys
+
+
+def _classify_error(error: Exception) -> str:
+    """Classify a Gemini API error into a category for retry decisions."""
+    msg = str(error).lower()
+    if "401" in msg or "unauthenticated" in msg or "invalid" in msg:
+        return "auth"          # bad/expired key → try next key
+    if "429" in msg or "rate" in msg or "quota" in msg or "resource" in msg:
+        return "rate_limit"    # rate limited → retry after delay or next key
+    if "500" in msg or "503" in msg or "unavailable" in msg or "internal" in msg:
+        return "server"        # transient server error → retry
+    if "timeout" in msg or "deadline" in msg:
+        return "timeout"       # timeout → retry
+    return "unknown"
+
+
+def _user_friendly_error(error_type: str, last_error: Exception) -> str:
+    """Return a user-facing error message based on the error type."""
+    if error_type == "auth":
+        return (
+            "The AI service credentials are invalid or expired. "
+            "Please contact the administrator to update the API key."
+        )
+    if error_type == "rate_limit":
+        return (
+            "The AI service is temporarily overloaded. "
+            "Please wait a moment and try again."
+        )
+    if error_type == "server":
+        return (
+            "The AI service is experiencing temporary issues. "
+            "Please try again in a few seconds."
+        )
+    if error_type == "timeout":
+        return (
+            "The AI request timed out. Try asking a simpler question "
+            "or try again in a moment."
+        )
+    return "The AI assistant encountered an unexpected error. Please try again."
+
+
+# ---------------------------------------------------------------------------
 # Main chat function
 # ---------------------------------------------------------------------------
 
@@ -369,8 +426,11 @@ async def chat_with_ai(
 ) -> str:
     """Send a message (with optional images) to Gemini and get a response.
 
-    Builds deep database context with ALL invoices, products, suppliers,
-    and query-specific enrichment before sending to the model.
+    Robustness features:
+    - Multiple API key rotation (if GEMINI_API_KEY_2 is set)
+    - Model cascade: primary → fallback
+    - Retry with delay for transient errors
+    - Specific, user-friendly error messages
 
     Args:
         message: The user's text message.
@@ -382,11 +442,13 @@ async def chat_with_ai(
         The AI assistant's response text.
     """
     settings = get_settings()
+    api_keys = _get_api_keys()
 
-    if not settings.GEMINI_API_KEY or settings.GEMINI_API_KEY == "your_gemini_api_key_here":
-        raise ValueError("GEMINI_API_KEY is not configured.")
-
-    client = genai.Client(api_key=settings.GEMINI_API_KEY)
+    if not api_keys:
+        raise ValueError(
+            "The AI service is not configured. "
+            "Please set GEMINI_API_KEY in the server environment."
+        )
 
     # Build deep database context (query-aware)
     db_context = await _build_db_context(db, user_message=message)
@@ -424,53 +486,80 @@ async def chat_with_ai(
 
     logger.info(
         "Chat request: %d history messages, %d images, message length: %d, "
-        "context length: %d chars",
+        "context length: %d chars, api_keys: %d",
         len(conversation_history),
         len(image_data) if image_data else 0,
         len(message),
         len(system_instruction),
+        len(api_keys),
     )
 
-    # Model cascade: try primary, then fallback
+    # ── Robust model cascade with key rotation ──
     models_to_try = [settings.GEMINI_PRIMARY_MODEL, settings.GEMINI_FALLBACK_MODEL]
-    response = None
     last_error: Exception | None = None
+    last_error_type = "unknown"
 
-    for model_index, model_name in enumerate(models_to_try):
-        is_fallback = model_index > 0
+    for key_index, api_key in enumerate(api_keys):
+        client = genai.Client(api_key=api_key)
+        key_label = f"key_{key_index + 1}"
 
-        if is_fallback:
-            logger.warning(
-                "Primary chat model failed. Falling back to %s", model_name
-            )
+        for model_index, model_name in enumerate(models_to_try):
+            is_primary = model_index == 0
 
-        try:
             # Gemini 3.x models use thinking_level; 2.x models don't.
             thinking = (
                 types.ThinkingConfig(thinking_level="HIGH")
-                if not is_fallback
+                if is_primary
                 else None
             )
-            response = client.models.generate_content(
-                model=model_name,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    temperature=0.4,
-                    thinking_config=thinking,
-                ),
-            )
-            logger.info("Chat responded via %s", model_name)
-            break
-        except Exception as e:
-            last_error = e
-            logger.error("Chat model %s failed: %s", model_name, e)
 
-    if response is None:
-        raise ValueError(
-            f"Chat failed with all models: {last_error}"
-        )
+            for attempt in range(1, MAX_RETRIES + 1):
+                try:
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=contents,
+                        config=types.GenerateContentConfig(
+                            system_instruction=system_instruction,
+                            temperature=0.4,
+                            thinking_config=thinking,
+                        ),
+                    )
+                    logger.info(
+                        "Chat responded via %s [%s] (attempt %d)",
+                        model_name, key_label, attempt,
+                    )
+                    reply = response.text
+                    logger.info("Chat response: %d chars", len(reply))
+                    return reply
 
-    reply = response.text
-    logger.info("Chat response: %d chars", len(reply))
-    return reply
+                except Exception as e:
+                    last_error = e
+                    last_error_type = _classify_error(e)
+                    logger.warning(
+                        "Chat %s [%s] attempt %d/%d failed (%s): %s",
+                        model_name, key_label, attempt, MAX_RETRIES,
+                        last_error_type, e,
+                    )
+
+                    # Auth errors → skip remaining retries, try next key
+                    if last_error_type == "auth":
+                        break
+
+                    # Retry transient errors with delay
+                    if attempt < MAX_RETRIES and last_error_type in (
+                        "rate_limit", "server", "timeout"
+                    ):
+                        await asyncio.sleep(RETRY_DELAY * attempt)
+
+            # If auth error, skip remaining models for this key
+            if last_error_type == "auth":
+                logger.error("API %s is invalid/expired, trying next key", key_label)
+                break
+
+    # All keys + models + retries exhausted
+    error_msg = _user_friendly_error(last_error_type, last_error)
+    logger.error(
+        "Chat failed after all attempts. Error type: %s, Last error: %s",
+        last_error_type, last_error,
+    )
+    raise ValueError(error_msg)

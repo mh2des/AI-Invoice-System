@@ -94,23 +94,24 @@ async def extract_invoice_data(
 ) -> dict:
     """Extract invoice data from uploaded images or PDF using Gemini.
 
-    Uses the primary model (gemini-3.1-flash-lite-preview) with automatic
-    fallback to gemini-2.5-flash if the primary model is unavailable.
+    Uses the primary model with automatic fallback to a stable model.
+    Supports multiple API keys for rotation when one is rate-limited/expired.
 
     Args:
         files: List of (file_bytes, mime_type) tuples.
-               For images: mime_type like 'image/jpeg', 'image/png'
-               For PDF: mime_type 'application/pdf'
 
     Returns:
         Dict with raw Gemini extraction result plus parsed fields.
     """
     settings = get_settings()
 
-    if not settings.GEMINI_API_KEY or settings.GEMINI_API_KEY == "your_gemini_api_key_here":
+    # Collect all valid API keys
+    api_keys = [
+        k for k in [settings.GEMINI_API_KEY, settings.GEMINI_API_KEY_2]
+        if k and k not in ("", "your_gemini_api_key_here")
+    ]
+    if not api_keys:
         raise ValueError("GEMINI_API_KEY is not configured. Set it in .env file.")
-
-    client = genai.Client(api_key=settings.GEMINI_API_KEY)
 
     # Build content parts: prompt text + all file parts
     content_parts: list[types.Part] = []
@@ -126,70 +127,86 @@ async def extract_invoice_data(
     # Add the prompt as the last part
     content_parts.append(types.Part.from_text(text=EXTRACTION_PROMPT))
 
-    # Model cascade: try primary, then fallback
+    # Model cascade with key rotation
     models_to_try = [settings.GEMINI_PRIMARY_MODEL, settings.GEMINI_FALLBACK_MODEL]
     response = None
+    last_error: Exception | None = None
 
-    for model_index, model_name in enumerate(models_to_try):
-        is_fallback = model_index > 0
+    for key_index, api_key in enumerate(api_keys):
+        client = genai.Client(api_key=api_key)
+        key_label = f"key_{key_index + 1}"
 
-        if is_fallback:
-            logger.warning(
-                "Primary model exhausted retries. Falling back to %s",
-                model_name,
+        for model_index, model_name in enumerate(models_to_try):
+            is_primary = model_index == 0
+
+            logger.info(
+                "Sending %d file(s) to %s [%s] for extraction",
+                len(files), model_name, key_label,
             )
 
-        logger.info(
-            "Sending %d file(s) to %s for extraction", len(files), model_name
-        )
+            for attempt in range(1, MAX_RETRIES + 1):
+                try:
+                    # Gemini 3.x models use thinking_level; 2.x models don't.
+                    thinking = (
+                        types.ThinkingConfig(thinking_level="MEDIUM")
+                        if is_primary
+                        else None
+                    )
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=content_parts,
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                            temperature=0.1,
+                            thinking_config=thinking,
+                        ),
+                    )
+                    logger.info(
+                        "Extraction succeeded with %s [%s] (attempt %d/%d)",
+                        model_name, key_label, attempt, MAX_RETRIES,
+                    )
+                    break
+                except Exception as e:
+                    last_error = e
+                    err_msg = str(e).lower()
+                    is_auth_error = "401" in err_msg or "unauthenticated" in err_msg
 
-        last_error: Exception | None = None
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                # Gemini 3.x models use thinking_level; 2.x models don't.
-                thinking = (
-                    types.ThinkingConfig(thinking_level="MEDIUM")
-                    if not is_fallback
-                    else None
-                )
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=content_parts,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        temperature=0.1,
-                        thinking_config=thinking,
-                    ),
-                )
-                logger.info(
-                    "Extraction succeeded with %s (attempt %d/%d)",
-                    model_name, attempt, MAX_RETRIES,
-                )
+                    if is_auth_error:
+                        logger.error(
+                            "API %s is invalid/expired for %s: %s",
+                            key_label, model_name, e,
+                        )
+                        break  # skip retries, try next key
+
+                    if attempt < MAX_RETRIES:
+                        delay = RETRY_BASE_DELAY ** attempt
+                        logger.warning(
+                            "%s [%s] extraction failed (attempt %d/%d): %s — retrying in %ds",
+                            model_name, key_label, attempt, MAX_RETRIES, e, delay,
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.error(
+                            "%s [%s] extraction failed after %d attempts: %s",
+                            model_name, key_label, MAX_RETRIES, e,
+                        )
+
+            # If we got a response, stop entirely
+            if response is not None:
                 break
-            except Exception as e:
-                last_error = e
-                if attempt < MAX_RETRIES:
-                    delay = RETRY_BASE_DELAY ** attempt
-                    logger.warning(
-                        "%s extraction failed (attempt %d/%d): %s — retrying in %ds",
-                        model_name, attempt, MAX_RETRIES, e, delay,
-                    )
-                    await asyncio.sleep(delay)
-                else:
-                    logger.error(
-                        "%s extraction failed after %d attempts: %s",
-                        model_name, MAX_RETRIES, e,
-                    )
 
-        # If we got a response from this model, stop the cascade
+            # If auth error, skip remaining models for this key
+            if last_error and "401" in str(last_error).lower():
+                break
+
+        # If we got a response, stop trying more keys
         if response is not None:
             break
 
-    # If no model succeeded, raise the last error
+    # If no key+model succeeded, raise the last error
     if response is None:
         raise ValueError(
-            f"Gemini extraction failed with all models after {MAX_RETRIES} "
-            f"attempts each: {last_error}"
+            f"Gemini extraction failed with all models and API keys: {last_error}"
         )
 
     # Parse the JSON response

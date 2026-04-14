@@ -147,11 +147,22 @@ async def chat_text(
         return ChatResponse(reply=reply, session_id=session.id)
     except ValueError as e:
         await db.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.warning("Chat ValueError: %s", e)
+        # Return the user-friendly error as a reply so it shows in the chat
+        error_reply = str(e)
+        try:
+            await _save_messages(db, session, body.message, f"⚠️ {error_reply}")
+            await db.commit()
+        except Exception:
+            await db.rollback()
+        return ChatResponse(reply=f"⚠️ {error_reply}", session_id=session.id)
     except Exception as e:
         await db.rollback()
         logger.error("Chat error: %s", e)
-        raise HTTPException(status_code=500, detail="AI assistant error. Please try again.")
+        return ChatResponse(
+            reply="⚠️ The AI assistant encountered a temporary issue. Please try again.",
+            session_id=session.id,
+        )
 
 
 @router.post("/with-image", response_model=ChatResponse)
@@ -204,11 +215,21 @@ async def chat_with_image(
         return ChatResponse(reply=reply, session_id=session.id)
     except ValueError as e:
         await db.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.warning("Chat with image ValueError: %s", e)
+        error_reply = str(e)
+        try:
+            await _save_messages(db, session, message, f"⚠️ {error_reply}", image_refs=image_refs)
+            await db.commit()
+        except Exception:
+            await db.rollback()
+        return ChatResponse(reply=f"⚠️ {error_reply}", session_id=session.id)
     except Exception as e:
         await db.rollback()
         logger.error("Chat with image error: %s", e)
-        raise HTTPException(status_code=500, detail="AI assistant error. Please try again.")
+        return ChatResponse(
+            reply="⚠️ The AI assistant encountered a temporary issue. Please try again.",
+            session_id=session.id,
+        )
 
 
 # ── Session management endpoints ──────────────────────────────────────────────
