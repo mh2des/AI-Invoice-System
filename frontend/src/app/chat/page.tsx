@@ -25,6 +25,8 @@ import {
   Trash2,
   ChevronLeft,
 } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -344,15 +346,17 @@ export default function ChatPage() {
                         ))}
                       </div>
                     )}
-                    <div
-                      className="text-[15px] leading-relaxed whitespace-pre-wrap break-words"
-                      dangerouslySetInnerHTML={{
-                        __html:
-                          msg.role === "assistant"
-                            ? formatMarkdown(msg.text)
-                            : escapeHtml(msg.text),
-                      }}
-                    />
+                    {msg.role === "assistant" ? (
+                      <div className="chat-markdown">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {msg.text}
+                        </ReactMarkdown>
+                      </div>
+                    ) : (
+                      <div className="text-[15px] leading-relaxed whitespace-pre-wrap break-words">
+                        {msg.text}
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}
@@ -475,24 +479,4 @@ function groupByDate(sessions: SessionSummary[]): Record<string, SessionSummary[
     result[label].push(s);
   }
   return result;
-}
-
-function formatMarkdown(text: string): string {
-  return escapeHtml(text)
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*(.+?)\*/g, "<em>$1</em>")
-    .replace(
-      /`(.+?)`/g,
-      '<code class="bg-muted px-1.5 py-0.5 rounded text-sm font-mono">$1</code>'
-    )
-    .replace(/^• /gm, "• ")
-    .replace(/\n/g, "<br/>");
-}
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }
