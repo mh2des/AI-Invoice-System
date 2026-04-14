@@ -15,14 +15,15 @@ MAX_RETRIES = 3
 RETRY_BASE_DELAY = 2  # seconds
 
 EXTRACTION_PROMPT = """You are a professional invoice data extraction assistant.
-Extract all data from this supplier invoice image(s).
+Extract all data from this supplier invoice/receipt/delivery order image(s).
 
-The invoice may contain text in English, Arabic (العربية), Chinese (中文), or Malay.
+The document may contain text in English, Arabic (العربية), Chinese (中文), or Malay.
 Translate all product names to English in the output.
 
 Return ONLY valid JSON, no markdown, no preamble.
 
 {
+  "document_type": "invoice | delivery_order | receipt | purchase_order | unknown",
   "invoice_number": "string or null",
   "supplier_name": "string or null",
   "date": "YYYY-MM-DD or null",
@@ -34,14 +35,14 @@ Return ONLY valid JSON, no markdown, no preamble.
       "barcode": "string or null",
       "quantity": number,
       "uom": "string (e.g. CTN, BOX, PCS, UNIT, PAKET)",
-      "unit_price": number,
+      "unit_price": number or null,
       "discount_percent": number or null,
-      "total": number
+      "total": number or null
     }
   ],
   "subtotal": number or null,
   "discount_total": number or null,
-  "grand_total": number
+  "grand_total": number or null
 }
 
 Rules:
@@ -50,7 +51,11 @@ Rules:
 - For handwritten invoices, do your best — mark uncertain values with a trailing "?" in item_name.
 - UOM must be extracted exactly as shown (CTN, BOX, PCS, etc.)
 - Discount: if a line item shows a discount percentage, capture it.
-- Grand total: the final amount after all discounts."""
+- Grand total: the final amount after all discounts.
+- IMPORTANT: Look very carefully for prices. They may be in columns labeled "U.PRICE", "UNIT PRICE", "HARGA", "价目", "AMOUNT", "JUMLAH". Check ALL columns.
+- If a column has numbers next to items, those might be prices — extract them.
+- If no price column exists at all (e.g. delivery orders), set unit_price and total to null.
+- document_type: identify whether this is an invoice (has prices), delivery order (no prices), receipt, or purchase order."""
 
 def _safe_decimal(value) -> Decimal | None:
     """Convert a value to Decimal safely, returning None on failure."""
@@ -249,6 +254,7 @@ def parse_extraction_result(raw_data: dict) -> dict:
         )
 
     return {
+        "document_type": raw_data.get("document_type", "unknown"),
         "invoice_number": raw_data.get("invoice_number"),
         "supplier_name": raw_data.get("supplier_name"),
         "invoice_date": _safe_date(raw_data.get("date")),
