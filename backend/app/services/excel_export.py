@@ -129,6 +129,7 @@ def generate_invoice_report(
     if has_discounts:
         headers.insert(6, "Discount")
     headers.append("Match")
+    headers.append("Matched Product")
 
     for col_idx, header in enumerate(headers, 1):
         cell = ws.cell(row=row, column=col_idx, value=header)
@@ -154,8 +155,9 @@ def generate_invoice_report(
         ws.cell(row=row, column=col).alignment = WRAP
         col += 1
 
-        # Barcode
-        ws.cell(row=row, column=col, value=item.get("extracted_barcode") or "").font = TABLE_FONT
+        # Barcode — prefer matched product barcode, fall back to extracted
+        barcode = item.get("product_barcode") or item.get("extracted_barcode") or ""
+        ws.cell(row=row, column=col, value=barcode).font = TABLE_FONT
         ws.cell(row=row, column=col).alignment = CENTER
         col += 1
 
@@ -215,6 +217,12 @@ def generate_invoice_report(
 
         ws.cell(row=row, column=col, value=match_text).font = TABLE_FONT
         ws.cell(row=row, column=col).alignment = CENTER
+        col += 1
+
+        # Matched product name
+        matched_product = item.get("product_name") or ""
+        ws.cell(row=row, column=col, value=matched_product).font = TABLE_FONT
+        ws.cell(row=row, column=col).alignment = WRAP
 
         # Apply row fill and borders
         for c in range(1, col + 1):
@@ -296,7 +304,8 @@ def generate_invoice_report(
         6: 12,   # Unit Price
         7: 12,   # Discount or Total
         8: 14,   # Total or Match
-        9: 18,   # Match (if discount column)
+        9: 18,   # Match or Matched Product
+        10: 35,  # Matched Product (if discount column)
     }
     for col_idx, width in col_widths.items():
         ws.column_dimensions[get_column_letter(col_idx)].width = width

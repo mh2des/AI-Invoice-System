@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from app.db.session import get_db
 from app.models.invoice import Invoice
+from app.models.invoice_item import InvoiceItem
 from app.services.excel_export import generate_invoice_report
 
 logger = logging.getLogger(__name__)
@@ -27,7 +28,10 @@ async def generate_report(
     """
     result = await db.execute(
         select(Invoice)
-        .options(selectinload(Invoice.items), selectinload(Invoice.supplier))
+        .options(
+            selectinload(Invoice.items).selectinload(InvoiceItem.product),
+            selectinload(Invoice.supplier),
+        )
         .where(Invoice.id == invoice_id)
     )
     invoice = result.scalar_one_or_none()
@@ -64,6 +68,12 @@ async def generate_report(
 
     items_data = []
     for item in sorted(invoice.items, key=lambda x: x.line_number or 0):
+        # Use matched product barcode/name if available, fall back to extracted
+        product_barcode = None
+        product_name = None
+        if item.product:
+            product_barcode = item.product.barcode
+            product_name = item.product.description
         items_data.append({
             "line_number": item.line_number,
             "extracted_name": item.extracted_name,
@@ -76,6 +86,8 @@ async def generate_report(
             "matched": item.matched,
             "match_confidence": item.match_confidence,
             "match_method": item.match_method,
+            "product_barcode": product_barcode,
+            "product_name": product_name,
         })
 
     # Generate the Excel file
