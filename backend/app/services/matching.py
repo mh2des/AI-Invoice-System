@@ -141,45 +141,124 @@ async def match_invoice_items(
 def _normalize_text(text: str) -> str:
     """Normalize text for matching: lowercase, expand abbreviations, strip noise."""
     text = text.strip().lower()
-    # Remove common noise characters
+    # Remove common noise characters and packaging info like (1*12)
     text = re.sub(r'[*#@!~`]', '', text)
+    text = re.sub(r'\([\d*x]+\)', '', text)  # remove (1*12), (1x12) etc.
     # Normalize whitespace
-    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
     # Expand known abbreviations
     words = text.split()
     expanded = [ABBREVIATIONS.get(w, w) for w in words]
     return " ".join(expanded)
 
 
-def _multi_strategy_score(name_a: str, name_b: str) -> float:
-    """Run multiple fuzzy matching strategies and return the best score.
+# ── Size/volume extraction for size-aware matching ──
 
-    Strategies:
-    1. token_sort_ratio — handles reordered words (e.g., "SOKARI ALHARAMAIN" vs "ALHARAMAIN SOKARI")
-    2. partial_ratio — handles substring matches (e.g., "SOKARI" vs "ALHARAMAIN SOKARI 50ML")
-    3. token_set_ratio — handles extra/missing words (e.g., "PERFUME OIL 50ML" vs "PERFUME OIL")
-    4. WRatio — weighted combination of multiple strategies
+_SIZE_PATTERN = re.compile(
+    r'(\d+(?:\.\d+)?)\s*'
+    r'(ml|lt|ltr|liter|litre|l|kg|kilogram|gm|gram|g|oz|gallon|gal)\b',
+    re.IGNORECASE,
+)
+
+# Normalize all volumes to milliliters and weights to grams for comparison
+_UNIT_TO_ML = {
+    "ml": 1, "l": 1000, "lt": 1000, "ltr": 1000, "liter": 1000, "litre": 1000,
+}
+_UNIT_TO_G = {
+    "g": 1, "gm": 1, "gram": 1, "kg": 1000, "kilogram": 1000, "oz": 28.35,
+}
+
+
+def _extract_size(text: str) -> tuple[float | None, str | None]:
+    """Extract the primary size/volume from a product name.
+
+    Returns (normalized_value, category) where category is 'volume' or 'weight'.
+    E.g., '1L' → (1000.0, 'volume'), '200ML' → (200.0, 'volume'), '500G' → (500.0, 'weight')
     """
-    scores = [
-        fuzz.token_sort_ratio(name_a, name_b),
-        fuzz.partial_ratio(name_a, name_b),
-        fuzz.token_set_ratio(name_a, name_b),
-        fuzz.WRatio(name_a, name_b),
-    ]
-    return max(scores)
+    matches = _SIZE_PATTERN.findall(text)
+    if not matches:
+        return None, None
+
+    # Take the first size found
+    num_str, unit = matches[0]
+    num = float(num_str)
+    unit_lower = unit.lower()
+
+    if unit_lower in _UNIT_TO_ML:
+        return num * _UNIT_TO_ML[unit_lower], "volume"
+    if unit_lower in _UNIT_TO_G:
+        return num * _UNIT_TO_G[unit_lower], "weight"
+    return None, None
 
 
-def _word_overlap_score(name_a: str, name_b: str) -> float:
-    """Score based on percentage of shared words. Good for catching
-    partial names like 'CHICKEN BREAST' in 'FROZEN CHICKEN BREAST 1KG'."""
+def _size_compatible(name_a: str, name_b: str) -> bool:
+    """Check whether two product names have compatible sizes.
+
+    Returns True if:
+    - Neither has a size → compatible (can't compare)
+    - Only one has a size → compatible (ambiguous, allow match)
+    - Both have sizes in same category and values are within 20% → compatible
+    - Both have sizes but differ significantly → NOT compatible
+    """
+    size_a, cat_a = _extract_size(name_a)
+    size_b, cat_b = _extract_size(name_b)
+
+    # If either has no size, we can't penalize
+    if size_a is None or size_b is None:
+        return True
+
+    # Different categories (volume vs weight) → can't compare
+    if cat_a != cat_b:
+        return True
+
+    # Same category — check if sizes are close (within 20% tolerance)
+    if size_a == 0 or size_b == 0:
+        return size_a == size_b
+
+    ratio = max(size_a, size_b) / min(size_a, size_b)
+    return ratio <= 1.2  # 20% tolerance
+
+
+def _compute_match_score(name_a: str, name_b: str) -> float:
+    """Compute a robust match score between two product names.
+
+    Uses a balanced combination of fuzzy strategies with size-awareness:
+    - token_sort_ratio: good for reordered words
+    - token_set_ratio: good for extra/missing words (with strict guard)
+    - ratio: basic Levenshtein similarity (no partial matching tricks)
+    - Size penalty: if sizes clearly differ, penalize heavily
+
+    Does NOT use partial_ratio or WRatio (both cause false positives).
+    """
+    # Primary scores
+    sort_score = fuzz.token_sort_ratio(name_a, name_b)
+    set_score = fuzz.token_set_ratio(name_a, name_b)
+    plain_score = fuzz.ratio(name_a, name_b)
+
+    # Guard token_set_ratio: it gives 100 when one string is a subset of
+    # another's tokens (e.g., "pomegranate" vs "lavi 1l pack pomegranate fruit").
+    # Only trust it when there's significant bidirectional word overlap.
     words_a = set(name_a.split())
     words_b = set(name_b.split())
-    if not words_a or not words_b:
-        return 0.0
-    overlap = words_a & words_b
-    # Score = overlap relative to the smaller set (the query is usually shorter)
-    smaller = min(len(words_a), len(words_b))
-    return (len(overlap) / smaller) * 100 if smaller else 0.0
+    overlap = len(words_a & words_b)
+
+    # Require overlap to be at least 50% of BOTH word sets
+    overlap_ratio_a = overlap / len(words_a) if words_a else 0
+    overlap_ratio_b = overlap / len(words_b) if words_b else 0
+    min_overlap = min(overlap_ratio_a, overlap_ratio_b)
+
+    if min_overlap < 0.5:
+        # Poor overlap — don't trust token_set_ratio at all
+        set_score = min(set_score, sort_score)
+
+    base_score = max(sort_score, set_score, plain_score)
+
+    # Size penalty: if both products have sizes and they differ significantly,
+    # penalize the score to prevent "1L" matching "200ML"
+    if not _size_compatible(name_a, name_b):
+        base_score = base_score * 0.5  # halve the score
+
+    return base_score
 
 
 def _match_single_item(
@@ -281,7 +360,7 @@ def _match_single_item(
                 "uom_mismatch": uom_mismatch,
             }
 
-    # --- Priority 4: Multi-strategy fuzzy match ---
+    # --- Priority 4: Size-aware fuzzy match ---
     if not all_products:
         return no_match
 
@@ -290,18 +369,10 @@ def _match_single_item(
 
     for product in all_products:
         prod_normalized = _normalize_text(product.description)
+        score = _compute_match_score(name_normalized, prod_normalized)
 
-        # Multi-strategy fuzzy score
-        fuzzy_score = _multi_strategy_score(name_normalized, prod_normalized)
-
-        # Word overlap boost — if many words match, boost score
-        overlap_score = _word_overlap_score(name_normalized, prod_normalized)
-
-        # Combined score: weighted average favoring the better strategy
-        combined = max(fuzzy_score, overlap_score * 0.95)
-
-        if combined > best_score:
-            best_score = combined
+        if score > best_score:
+            best_score = score
             best_product = product
 
     if best_score >= FUZZY_THRESHOLD and best_product is not None:
