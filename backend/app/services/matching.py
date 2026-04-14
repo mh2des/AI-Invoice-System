@@ -1,4 +1,5 @@
 import logging
+import re
 from decimal import Decimal
 
 from rapidfuzz import fuzz
@@ -10,11 +11,40 @@ from app.models.product import Product
 
 logger = logging.getLogger(__name__)
 
-# Confidence thresholds
+# ── Confidence thresholds ──
 BARCODE_CONFIDENCE = Decimal("1.00")
+BARCODE_PARTIAL_CONFIDENCE = Decimal("0.90")
 EXACT_NAME_CONFIDENCE = Decimal("0.95")
-FUZZY_THRESHOLD = 75  # minimum rapidfuzz score to consider a match
-REVIEW_THRESHOLD = Decimal("0.75")  # below this = needs manual review
+FUZZY_THRESHOLD = 55  # minimum score to consider a match (was 75 — too strict)
+REVIEW_THRESHOLD = Decimal("0.65")  # below this → needs manual review (was 0.75)
+
+# ── Common abbreviation normalization ──
+ABBREVIATIONS: dict[str, str] = {
+    "pkt": "packet",
+    "btl": "bottle",
+    "ctn": "carton",
+    "bx": "box",
+    "dz": "dozen",
+    "dzn": "dozen",
+    "pcs": "pieces",
+    "pc": "piece",
+    "ea": "each",
+    "kg": "kilogram",
+    "gm": "gram",
+    "grm": "gram",
+    "ltr": "liter",
+    "lt": "liter",
+    "ml": "milliliter",
+    "org": "original",
+    "orig": "original",
+    "sml": "small",
+    "med": "medium",
+    "lrg": "large",
+    "lg": "large",
+    "blk": "black",
+    "wht": "white",
+    "grn": "green",
+}
 
 
 async def match_invoice_items(
@@ -108,6 +138,50 @@ async def match_invoice_items(
     return summary
 
 
+def _normalize_text(text: str) -> str:
+    """Normalize text for matching: lowercase, expand abbreviations, strip noise."""
+    text = text.strip().lower()
+    # Remove common noise characters
+    text = re.sub(r'[*#@!~`]', '', text)
+    # Normalize whitespace
+    text = re.sub(r'\s+', ' ', text)
+    # Expand known abbreviations
+    words = text.split()
+    expanded = [ABBREVIATIONS.get(w, w) for w in words]
+    return " ".join(expanded)
+
+
+def _multi_strategy_score(name_a: str, name_b: str) -> float:
+    """Run multiple fuzzy matching strategies and return the best score.
+
+    Strategies:
+    1. token_sort_ratio — handles reordered words (e.g., "SOKARI ALHARAMAIN" vs "ALHARAMAIN SOKARI")
+    2. partial_ratio — handles substring matches (e.g., "SOKARI" vs "ALHARAMAIN SOKARI 50ML")
+    3. token_set_ratio — handles extra/missing words (e.g., "PERFUME OIL 50ML" vs "PERFUME OIL")
+    4. WRatio — weighted combination of multiple strategies
+    """
+    scores = [
+        fuzz.token_sort_ratio(name_a, name_b),
+        fuzz.partial_ratio(name_a, name_b),
+        fuzz.token_set_ratio(name_a, name_b),
+        fuzz.WRatio(name_a, name_b),
+    ]
+    return max(scores)
+
+
+def _word_overlap_score(name_a: str, name_b: str) -> float:
+    """Score based on percentage of shared words. Good for catching
+    partial names like 'CHICKEN BREAST' in 'FROZEN CHICKEN BREAST 1KG'."""
+    words_a = set(name_a.split())
+    words_b = set(name_b.split())
+    if not words_a or not words_b:
+        return 0.0
+    overlap = words_a & words_b
+    # Score = overlap relative to the smaller set (the query is usually shorter)
+    smaller = min(len(words_a), len(words_b))
+    return (len(overlap) / smaller) * 100 if smaller else 0.0
+
+
 def _match_single_item(
     item: InvoiceItem,
     barcode_map: dict[str, "Product"],
@@ -115,6 +189,14 @@ def _match_single_item(
     all_products: list["Product"],
 ) -> dict:
     """Try to match a single invoice item against the product database.
+
+    Matching cascade:
+      1. Exact barcode match (confidence 1.00)
+      2. Partial barcode match — prefix/suffix (confidence 0.90)
+      3. Exact description match, case-insensitive (confidence 0.95)
+      4. Multi-strategy fuzzy match with abbreviation normalization
+      5. Word-overlap boost for partial name matches
+      6. No match — flagged for review
 
     Returns a dict with: product_id, matched, confidence, method, product_name, uom_mismatch
     """
@@ -142,13 +224,38 @@ def _match_single_item(
                 "uom_mismatch": uom_mismatch,
             }
 
+        # --- Priority 2: Partial barcode match (prefix/suffix for OCR truncation) ---
+        if len(barcode) >= 4:
+            for db_barcode, product in barcode_map.items():
+                # Check if one is a prefix/suffix of the other
+                if (
+                    db_barcode.startswith(barcode)
+                    or db_barcode.endswith(barcode)
+                    or barcode.startswith(db_barcode)
+                    or barcode.endswith(db_barcode)
+                ):
+                    uom_mismatch = _check_uom_mismatch(item.extracted_uom, product.uom)
+                    logger.info(
+                        "Partial barcode match: extracted '%s' ≈ product '%s' (%s)",
+                        barcode, db_barcode, product.description,
+                    )
+                    return {
+                        "product_id": product.id,
+                        "matched": True,
+                        "confidence": BARCODE_PARTIAL_CONFIDENCE,
+                        "method": "barcode_partial",
+                        "product_name": product.description,
+                        "uom_mismatch": uom_mismatch,
+                    }
+
     if not item.extracted_name:
         return no_match
 
     name = item.extracted_name.strip()
     name_lower = name.lower()
+    name_normalized = _normalize_text(name)
 
-    # --- Priority 2: Exact description match (case-insensitive) ---
+    # --- Priority 3: Exact description match (case-insensitive) ---
     if name_lower in desc_map:
         product = desc_map[name_lower]
         uom_mismatch = _check_uom_mismatch(item.extracted_uom, product.uom)
@@ -161,25 +268,52 @@ def _match_single_item(
             "uom_mismatch": uom_mismatch,
         }
 
-    # --- Priority 3: Fuzzy description match ---
+    # Also try with normalized text
+    for desc_key, product in desc_map.items():
+        if _normalize_text(desc_key) == name_normalized:
+            uom_mismatch = _check_uom_mismatch(item.extracted_uom, product.uom)
+            return {
+                "product_id": product.id,
+                "matched": True,
+                "confidence": EXACT_NAME_CONFIDENCE,
+                "method": "exact_name_normalized",
+                "product_name": product.description,
+                "uom_mismatch": uom_mismatch,
+            }
+
+    # --- Priority 4: Multi-strategy fuzzy match ---
     if not all_products:
         return no_match
 
-    best_score = 0
+    best_score = 0.0
     best_product = None
 
     for product in all_products:
-        # Use token_sort_ratio — handles reordered words well
-        # e.g. "ALHARAMAIN SOKARI" vs "SOKARI ALHARAMAIN"
-        score = fuzz.token_sort_ratio(name_lower, product.description.lower())
-        if score > best_score:
-            best_score = score
+        prod_normalized = _normalize_text(product.description)
+
+        # Multi-strategy fuzzy score
+        fuzzy_score = _multi_strategy_score(name_normalized, prod_normalized)
+
+        # Word overlap boost — if many words match, boost score
+        overlap_score = _word_overlap_score(name_normalized, prod_normalized)
+
+        # Combined score: weighted average favoring the better strategy
+        combined = max(fuzzy_score, overlap_score * 0.95)
+
+        if combined > best_score:
+            best_score = combined
             best_product = product
 
     if best_score >= FUZZY_THRESHOLD and best_product is not None:
         confidence = Decimal(str(round(best_score / 100, 2)))
         matched = confidence >= REVIEW_THRESHOLD
         uom_mismatch = _check_uom_mismatch(item.extracted_uom, best_product.uom)
+
+        logger.info(
+            "Fuzzy match: '%s' → '%s' (score=%.1f, confidence=%s, matched=%s)",
+            name, best_product.description, best_score, confidence, matched,
+        )
+
         return {
             "product_id": best_product.id,
             "matched": matched,
@@ -189,7 +323,7 @@ def _match_single_item(
             "uom_mismatch": uom_mismatch,
         }
 
-    # --- Priority 4: No match ---
+    # --- Priority 5: No match ---
     return no_match
 
 

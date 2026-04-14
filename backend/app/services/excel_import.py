@@ -5,7 +5,7 @@ from openpyxl import load_workbook
 from sqlalchemy import delete, select, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.invoice import InvoiceItem
+from app.models.invoice_item import InvoiceItem
 from app.models.product import Product
 from app.schemas.product import ProductImportResult
 

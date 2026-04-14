@@ -11,7 +11,7 @@ asyncpg==0.31.0
 psycopg2-binary==2.9.10
 
 # AI  (google-generativeai is deprecated; use the new unified SDK)
-google-genai==1.72.0
+google-genai>=1.73.0
 
 # Storage
 boto3==1.42.88

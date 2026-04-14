@@ -146,12 +146,19 @@ async def extract_invoice_data(
         last_error: Exception | None = None
         for attempt in range(1, MAX_RETRIES + 1):
             try:
+                # Gemini 3.x models use thinking_level; 2.x models don't.
+                thinking = (
+                    types.ThinkingConfig(thinking_level="MEDIUM")
+                    if not is_fallback
+                    else None
+                )
                 response = client.models.generate_content(
                     model=model_name,
                     contents=content_parts,
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
                         temperature=0.1,
+                        thinking_config=thinking,
                     ),
                 )
                 logger.info(
