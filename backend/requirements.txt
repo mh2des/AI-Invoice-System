@@ -24,3 +24,4 @@ pillow==12.2.0
 # Auth
 python-jose[cryptography]==3.5.0
 passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
