@@ -1,10 +1,11 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import products, invoices, suppliers, reports, dashboard, chat
+from app.api import auth, chat, dashboard, invoices, products, reports, suppliers
 from app.core.config import get_settings
+from app.core.deps import get_current_user
 
 
 @asynccontextmanager
@@ -41,13 +42,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Register routers
-app.include_router(dashboard.router, prefix="/api")
-app.include_router(suppliers.router, prefix="/api")
-app.include_router(products.router, prefix="/api")
-app.include_router(invoices.router, prefix="/api")
-app.include_router(reports.router, prefix="/api")
-app.include_router(chat.router, prefix="/api")
+# Auth router (public — no token required)
+app.include_router(auth.router, prefix="/api")
+
+# Protected routers — all require a valid JWT
+_protected = {"dependencies": [Depends(get_current_user)]}
+app.include_router(dashboard.router, prefix="/api", **_protected)
+app.include_router(suppliers.router, prefix="/api", **_protected)
+app.include_router(products.router, prefix="/api", **_protected)
+app.include_router(invoices.router, prefix="/api", **_protected)
+app.include_router(reports.router, prefix="/api", **_protected)
+app.include_router(chat.router, prefix="/api", **_protected)
 
 
 @app.get("/api/health")

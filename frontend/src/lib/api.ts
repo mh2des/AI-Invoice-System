@@ -1,18 +1,82 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api";
 
+// ── Auth helpers ──
+
+function getAuthHeaders(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  const token = localStorage.getItem("access_token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+const AUTH_PUBLIC_PATHS = ["/auth/login", "/auth/register", "/auth/refresh"];
+let refreshPromise: Promise<boolean> | null = null;
+
+async function tryRefreshToken(): Promise<boolean> {
+  if (refreshPromise) return refreshPromise;
+
+  refreshPromise = (async () => {
+    try {
+      const refreshToken = localStorage.getItem("refresh_token");
+      if (!refreshToken) return false;
+
+      const res = await fetch(`${API_BASE}/auth/refresh`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+
+      if (!res.ok) return false;
+
+      const data = await res.json();
+      localStorage.setItem("access_token", data.access_token);
+      localStorage.setItem("refresh_token", data.refresh_token);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      refreshPromise = null;
+    }
+  })();
+
+  return refreshPromise;
+}
+
+// ── Core request ──
+
 async function request<T>(
   path: string,
   options?: RequestInit
 ): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers: {
-      ...(options?.headers || {}),
-      ...(options?.body instanceof FormData
-        ? {}
-        : { "Content-Type": "application/json" }),
-    },
+  const buildHeaders = (): Record<string, string> => ({
+    ...getAuthHeaders(),
+    ...(options?.body instanceof FormData
+      ? {}
+      : { "Content-Type": "application/json" }),
+    ...((options?.headers as Record<string, string>) || {}),
   });
+
+  let res = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: buildHeaders(),
+  });
+
+  if (res.status === 401 && !AUTH_PUBLIC_PATHS.includes(path)) {
+    const refreshed = await tryRefreshToken();
+    if (refreshed) {
+      res = await fetch(`${API_BASE}${path}`, {
+        ...options,
+        headers: buildHeaders(),
+      });
+    }
+    if (res.status === 401) {
+      if (typeof window !== "undefined") {
+        localStorage.removeItem("access_token");
+        localStorage.removeItem("refresh_token");
+        window.location.href = "/login";
+      }
+      throw new Error("Session expired");
+    }
+  }
 
   if (!res.ok) {
     const errorBody = await res.text();
@@ -174,13 +238,16 @@ export async function manualMatchItem(
 export async function generateReport(invoiceId: number) {
   const res = await fetch(`${API_BASE}/reports/invoices/${invoiceId}/generate-report`, {
     method: "POST",
+    headers: getAuthHeaders(),
   });
   if (!res.ok) throw new Error(`Failed to generate report: ${res.status}`);
   return res.blob();
 }
 
 export async function downloadReport(invoiceId: number) {
-  const res = await fetch(`${API_BASE}/reports/invoices/${invoiceId}/download-report`);
+  const res = await fetch(`${API_BASE}/reports/invoices/${invoiceId}/download-report`, {
+    headers: getAuthHeaders(),
+  });
   if (!res.ok) throw new Error(`Failed to download report: ${res.status}`);
   return res.blob();
 }
@@ -211,6 +278,7 @@ export async function sendChatWithImage(
 
   const res = await fetch(`${API_BASE}/chat/with-image`, {
     method: "POST",
+    headers: getAuthHeaders(),
     body: formData,
   });
   if (!res.ok) {
@@ -230,5 +298,42 @@ export async function getChatSession(sessionId: number) {
 
 export async function deleteChatSession(sessionId: number) {
   return request<void>(`/chat/sessions/${sessionId}`, { method: "DELETE" });
+}
+
+// ── Auth ──
+
+export interface TokenResponse {
+  access_token: string;
+  refresh_token: string;
+  token_type: string;
+}
+
+export interface AuthUser {
+  id: number;
+  email: string;
+  full_name: string;
+  is_active: boolean;
+}
+
+export async function loginUser(email: string, password: string) {
+  return request<TokenResponse>("/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+export async function registerUser(
+  email: string,
+  password: string,
+  fullName: string
+) {
+  return request<AuthUser>("/auth/register", {
+    method: "POST",
+    body: JSON.stringify({ email, password, full_name: fullName }),
+  });
+}
+
+export async function getCurrentUser() {
+  return request<AuthUser>("/auth/me");
 }
 
