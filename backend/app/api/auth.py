@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.deps import get_current_user
 from app.core.security import (
     create_access_token,
@@ -25,6 +26,12 @@ router = APIRouter(prefix="/auth", tags=["Auth"])
 
 @router.post("/register", response_model=UserResponse, status_code=201)
 async def register(data: RegisterRequest, db: AsyncSession = Depends(get_db)):
+    settings = get_settings()
+    if not settings.REGISTRATION_SECRET:
+        raise HTTPException(status_code=403, detail="Registration is disabled")
+    if data.invite_code != settings.REGISTRATION_SECRET:
+        raise HTTPException(status_code=403, detail="Invalid invite code")
+
     email = data.email.lower().strip()
 
     if not email or "@" not in email:

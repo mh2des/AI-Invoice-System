@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
+    # Registration — only users with this secret can create accounts
+    REGISTRATION_SECRET: str = ""
+
     # CORS — set to your Vercel frontend URL in production
     FRONTEND_URL: str = ""
 

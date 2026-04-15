@@ -325,11 +325,12 @@ export async function loginUser(email: string, password: string) {
 export async function registerUser(
   email: string,
   password: string,
-  fullName: string
+  fullName: string,
+  inviteCode: string
 ) {
   return request<AuthUser>("/auth/register", {
     method: "POST",
-    body: JSON.stringify({ email, password, full_name: fullName }),
+    body: JSON.stringify({ email, password, full_name: fullName, invite_code: inviteCode }),
   });
 }
 
