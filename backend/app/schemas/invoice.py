@@ -75,6 +75,13 @@ class DashboardStats(BaseModel):
 
 # --- Matching schemas ---
 
+class MatchCandidate(BaseModel):
+    product_id: int
+    product_name: str
+    confidence: float
+    method: str
+
+
 class MatchItemResult(BaseModel):
     item_id: int
     line_number: int | None = None
@@ -85,6 +92,7 @@ class MatchItemResult(BaseModel):
     confidence: float | None = None
     method: str | None = None
     uom_mismatch: bool = False
+    candidates: list[MatchCandidate] = []
 
 
 class MatchSummaryResponse(BaseModel):
@@ -93,3 +101,11 @@ class MatchSummaryResponse(BaseModel):
     unmatched: int
     match_rate: float
     items: list[MatchItemResult] = []
+
+
+class ProductSuggestion(BaseModel):
+    product_id: int
+    product_name: str
+    barcode: str | None = None
+    uom: str | None = None
+    confidence: float

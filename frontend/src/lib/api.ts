@@ -234,6 +234,15 @@ export async function manualMatchItem(
   );
 }
 
+export async function getItemSuggestions(
+  invoiceId: number,
+  itemId: number
+) {
+  return request<import("./types").ProductSuggestion[]>(
+    `/invoices/${invoiceId}/items/${itemId}/suggestions`
+  );
+}
+
 // ── Reports ──
 export async function generateReport(invoiceId: number) {
   const res = await fetch(`${API_BASE}/reports/invoices/${invoiceId}/generate-report`, {

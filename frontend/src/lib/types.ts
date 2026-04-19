@@ -89,6 +89,13 @@ export interface InvoiceDetail extends Invoice {
   supplier_name: string | null;
 }
 
+export interface MatchCandidate {
+  product_id: number;
+  product_name: string;
+  confidence: number;
+  method: string;
+}
+
 export interface MatchItemResult {
   item_id: number;
   line_number: number | null;
@@ -99,6 +106,15 @@ export interface MatchItemResult {
   confidence: number | null;
   method: string | null;
   uom_mismatch: boolean;
+  candidates: MatchCandidate[];
+}
+
+export interface ProductSuggestion {
+  product_id: number;
+  product_name: string;
+  barcode: string | null;
+  uom: string | null;
+  confidence: number;
 }
 
 export interface MatchSummary {

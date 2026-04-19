@@ -16,6 +16,7 @@ from app.schemas.invoice import (
     InvoiceItemManualMatch,
     InvoiceResponse,
     MatchSummaryResponse,
+    ProductSuggestion,
 )
 from app.services.extraction import extract_invoice_data
 from app.services.storage import upload_file, get_presigned_url
@@ -422,3 +423,26 @@ async def manual_match(
         return updated
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get(
+    "/{invoice_id}/items/{item_id}/suggestions",
+    response_model=list[ProductSuggestion],
+)
+async def get_suggestions(
+    invoice_id: int,
+    item_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get top product suggestions for an invoice item based on AI matching."""
+    from app.services.matching import get_item_suggestions
+
+    item = await db.get(InvoiceItem, item_id)
+    if not item or item.invoice_id != invoice_id:
+        raise HTTPException(
+            status_code=404,
+            detail="Invoice item not found for this invoice",
+        )
+
+    suggestions = await get_item_suggestions(item_id, db, limit=10)
+    return suggestions
