@@ -1,9 +1,11 @@
+import asyncio
 import logging
 import math
 import re
 import time
 import threading
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 
 from rapidfuzz import fuzz, process as rfprocess
@@ -363,26 +365,45 @@ def _containment_score(tokens_a: set[str], tokens_b: set[str]) -> float:
 # Number of candidates to pass through the fast pre-filter before full scoring
 PREFILTER_LIMIT = 60
 
+# Thread pool for parallel item matching (rapidfuzz releases GIL)
+_match_pool = ThreadPoolExecutor(max_workers=4)
+
 
 def _prefilter_candidates(
     query: str,
     choices: dict[int, str],
 ) -> list[int]:
-    """Use rapidfuzz.process.extract for a fast C-level shortlist.
+    """Two-scorer union shortlist for high-recall prefilter.
 
-    Returns product IDs of the top PREFILTER_LIMIT candidates by token_sort_ratio.
-    This avoids running the expensive multi-signal scorer on all 5000+ products.
+    Uses BOTH token_sort_ratio (reordered words) and token_set_ratio
+    (subset/extra-word cases). Union gives wider net so the main scorer
+    never misses a strong candidate that one scorer alone would rank low.
     """
     if not choices:
         return []
-    results = rfprocess.extract(
+    sort_results = rfprocess.extract(
         query,
         choices,
         scorer=fuzz.token_sort_ratio,
         limit=PREFILTER_LIMIT,
-        score_cutoff=25,  # very low — just eliminate total garbage
+        score_cutoff=20,
     )
-    return [product_id for _, score, product_id in results]
+    set_results = rfprocess.extract(
+        query,
+        choices,
+        scorer=fuzz.token_set_ratio,
+        limit=PREFILTER_LIMIT,
+        score_cutoff=30,
+    )
+    # Union by product_id, preserving uniqueness
+    seen: set[int] = set()
+    out: list[int] = []
+    for results in (sort_results, set_results):
+        for _, _score, pid in results:
+            if pid not in seen:
+                seen.add(pid)
+                out.append(pid)
+    return out
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -505,13 +526,20 @@ async def match_invoice_items(
 
     idx = await _get_or_build_index(db)
 
+    # Run all items through matching in parallel threads.
+    # rapidfuzz releases the GIL during C-level scoring, so threads
+    # get real parallelism on the CPU-bound fuzz calls.
+    loop = asyncio.get_event_loop()
+    match_results = await asyncio.gather(*[
+        loop.run_in_executor(_match_pool, _match_single_item, item, idx)
+        for item in items
+    ])
+
     matched_count = 0
     unmatched_count = 0
     item_results = []
 
-    for item in items:
-        match_result = _match_single_item(item, idx)
-
+    for item, match_result in zip(items, match_results):
         item.product_id = match_result["product_id"]
         item.matched = match_result["matched"]
         item.match_confidence = match_result["confidence"]
@@ -760,13 +788,23 @@ async def get_invoice_suggestions(
         return {}
 
     idx = await _get_or_build_index(db)
-    suggestions_map: dict[int, list[dict]] = {}
 
-    for item in unmatched_items:
-        if not item.extracted_name:
-            suggestions_map[item.id] = []
-            continue
-        suggestions_map[item.id] = _score_suggestions(item.extracted_name, idx, limit)
+    # Separate items with/without names
+    items_with_names = [(item.id, item.extracted_name) for item in unmatched_items if item.extracted_name]
+    items_without_names = [item.id for item in unmatched_items if not item.extracted_name]
+
+    # Score items with names in parallel threads
+    loop = asyncio.get_event_loop()
+    futures = await asyncio.gather(*[
+        loop.run_in_executor(_match_pool, _score_suggestions, name, idx, limit)
+        for _, name in items_with_names
+    ])
+
+    suggestions_map: dict[int, list[dict]] = {}
+    for (item_id, _), result in zip(items_with_names, futures):
+        suggestions_map[item_id] = result
+    for item_id in items_without_names:
+        suggestions_map[item_id] = []
 
     return suggestions_map
 
