@@ -2,7 +2,8 @@
 
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
-import { getInvoices, deleteInvoice, getSuppliers } from "@/lib/api";
+import { useRouter } from "next/navigation";
+import { getInvoices, deleteInvoice, getSuppliers, uploadInvoice } from "@/lib/api";
 import type { Invoice, Supplier } from "@/lib/types";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
@@ -24,7 +25,8 @@ import {
 } from "@/components/ui/table";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Plus, Eye, Trash2, RefreshCw } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Plus, Eye, Trash2, RefreshCw, Loader2 } from "lucide-react";
 
 const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
   pending: "outline",
@@ -41,11 +43,53 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 export default function InvoicesPage() {
+  const router = useRouter();
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState("");
   const [supplierFilter, setSupplierFilter] = useState("");
+  const [pasteUploading, setPasteUploading] = useState(false);
+  const [pasteError, setPasteError] = useState<string | null>(null);
+
+  // Paste-to-upload: Cmd+V / Ctrl+V with clipboard images → instant upload
+  useEffect(() => {
+    const handlePaste = async (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+
+      const imageFiles: File[] = [];
+      for (const item of Array.from(items)) {
+        if (item.kind === "file" && item.type.startsWith("image/")) {
+          const file = item.getAsFile();
+          if (file) {
+            const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+            const ext = file.type.split("/")[1] || "png";
+            const named = new File([file], `pasted-invoice-${timestamp}.${ext}`, {
+              type: file.type,
+            });
+            imageFiles.push(named);
+          }
+        }
+      }
+
+      if (imageFiles.length === 0) return;
+      e.preventDefault();
+      setPasteUploading(true);
+      setPasteError(null);
+      try {
+        const invoice = await uploadInvoice(imageFiles);
+        router.push(`/invoices/${invoice.id}`);
+      } catch (err) {
+        console.error(err);
+        setPasteError(err instanceof Error ? err.message : "Paste upload failed");
+        setPasteUploading(false);
+      }
+    };
+
+    window.addEventListener("paste", handlePaste);
+    return () => window.removeEventListener("paste", handlePaste);
+  }, [router]);
 
   const fetchInvoices = useCallback(async () => {
     setLoading(true);
@@ -89,6 +133,22 @@ export default function InvoicesPage() {
 
   return (
     <div className="p-4 md:p-8">
+      {pasteUploading && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-3 p-8 rounded-xl bg-card border shadow-lg">
+            <Loader2 className="h-8 w-8 animate-spin text-primary" />
+            <p className="text-base font-medium">Uploading pasted invoice…</p>
+            <p className="text-sm text-muted-foreground">AI extraction will start automatically</p>
+          </div>
+        </div>
+      )}
+
+      {pasteError && (
+        <Alert variant="destructive" className="mb-4">
+          <AlertDescription>{pasteError}</AlertDescription>
+        </Alert>
+      )}
+
       <PageHeader
         title="Invoices"
         description={`${invoices.length} invoice${invoices.length !== 1 ? "s" : ""}`}

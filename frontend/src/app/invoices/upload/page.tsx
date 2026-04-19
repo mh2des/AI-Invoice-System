@@ -1,13 +1,13 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { uploadInvoice } from "@/lib/api";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Upload, FileText, Image, X, Loader2 } from "lucide-react";
+import { Upload, FileText, Image, X, Loader2, ClipboardPaste } from "lucide-react";
 
 export default function UploadInvoicePage() {
   const router = useRouter();
@@ -46,6 +46,38 @@ export default function UploadInvoicePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     []
   );
+
+  // Global paste handler — Cmd+V / Ctrl+V with clipboard images
+  useEffect(() => {
+    const handlePaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+
+      const imageFiles: File[] = [];
+      for (const item of Array.from(items)) {
+        if (item.kind === "file" && item.type.startsWith("image/")) {
+          const file = item.getAsFile();
+          if (file) {
+            // Clipboard images come as "image.png" — give a better name
+            const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+            const ext = file.type.split("/")[1] || "png";
+            const named = new File([file], `pasted-invoice-${timestamp}.${ext}`, {
+              type: file.type,
+            });
+            imageFiles.push(named);
+          }
+        }
+      }
+
+      if (imageFiles.length > 0) {
+        e.preventDefault();
+        addFiles(imageFiles);
+      }
+    };
+
+    window.addEventListener("paste", handlePaste);
+    return () => window.removeEventListener("paste", handlePaste);
+  }, [addFiles]);
 
   const removeFile = (index: number) => {
     setFiles((prev) => prev.filter((_, i) => i !== index));
@@ -106,6 +138,13 @@ export default function UploadInvoicePage() {
           <p className="text-base font-medium">
             Drag & drop files here, or click to browse
           </p>
+          <div className="flex items-center gap-1.5 mt-2 text-sm text-muted-foreground">
+            <ClipboardPaste className="h-4 w-4" />
+            <span>or paste from clipboard</span>
+            <kbd className="ml-1 px-1.5 py-0.5 text-xs rounded bg-muted border font-mono">
+              {typeof navigator !== "undefined" && /Mac/.test(navigator.userAgent) ? "⌘V" : "Ctrl+V"}
+            </kbd>
+          </div>
           <p className="text-sm text-muted-foreground mt-1.5">
             JPEG, PNG, WebP, GIF, TIFF, or PDF — max 20MB each
           </p>
