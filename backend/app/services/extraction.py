@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import threading
 from decimal import Decimal, InvalidOperation
 from datetime import date
 
@@ -13,6 +14,19 @@ logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 2  # seconds
+
+# Round-robin key index — survives across requests within the same process
+_key_counter_lock = threading.Lock()
+_key_counter = 0
+
+
+def _next_key_index(total_keys: int) -> int:
+    """Return the next API key index in round-robin fashion."""
+    global _key_counter
+    with _key_counter_lock:
+        idx = _key_counter % total_keys
+        _key_counter += 1
+        return idx
 
 EXTRACTION_PROMPT = """You are a professional invoice data extraction assistant.
 Extract all data from this supplier invoice/receipt/delivery order image(s).
@@ -132,14 +146,17 @@ async def extract_invoice_data(
     # Add the prompt as the last part
     content_parts.append(types.Part.from_text(text=EXTRACTION_PROMPT))
 
-    # Model cascade with key rotation
+    # Round-robin: start with a different key each request to spread load
+    start_index = _next_key_index(len(api_keys))
+    ordered_keys = [api_keys[(start_index + i) % len(api_keys)] for i in range(len(api_keys))]
+
     models_to_try = [settings.GEMINI_PRIMARY_MODEL, settings.GEMINI_FALLBACK_MODEL]
     response = None
     last_error: Exception | None = None
 
-    for key_index, api_key in enumerate(api_keys):
+    for key_index, api_key in enumerate(ordered_keys):
         client = genai.Client(api_key=api_key)
-        key_label = f"key_{key_index + 1}"
+        key_label = f"key_{(start_index + key_index) % len(api_keys) + 1}"
 
         for model_index, model_name in enumerate(models_to_try):
             is_primary = model_index == 0
@@ -175,6 +192,7 @@ async def extract_invoice_data(
                     last_error = e
                     err_msg = str(e).lower()
                     is_auth_error = "401" in err_msg or "unauthenticated" in err_msg
+                    is_rate_limit = "429" in err_msg or "resource_exhausted" in err_msg or "rate" in err_msg
 
                     if is_auth_error:
                         logger.error(
@@ -182,6 +200,15 @@ async def extract_invoice_data(
                             key_label, model_name, e,
                         )
                         break  # skip retries, try next key
+
+                    if is_rate_limit:
+                        logger.warning(
+                            "%s [%s] rate-limited (attempt %d/%d): %s — switching key/model",
+                            model_name, key_label, attempt, MAX_RETRIES, e,
+                        )
+                        # Wait briefly then break to try next model or key
+                        await asyncio.sleep(2)
+                        break
 
                     if attempt < MAX_RETRIES:
                         delay = RETRY_BASE_DELAY ** attempt
