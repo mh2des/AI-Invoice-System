@@ -182,7 +182,7 @@ async def _process_extraction(
                     select(Invoice).where(
                         Invoice.invoice_number == inv_num,
                         Invoice.id != invoice_id,
-                    )
+                    ).limit(1)
                 )
                 duplicate = dup_result.scalar_one_or_none()
                 if duplicate:
@@ -201,7 +201,7 @@ async def _process_extraction(
                 supplier_result = await db.execute(
                     select(Supplier).where(
                         Supplier.name.ilike(f"%{supplier_name}%")
-                    )
+                    ).limit(1)
                 )
                 supplier = supplier_result.scalar_one_or_none()
                 if supplier:
