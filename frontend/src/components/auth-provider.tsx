@@ -21,6 +21,7 @@ import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/s
 import { AppSidebar } from "@/components/app-sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Separator } from "@/components/ui/separator";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 // ── Context ──
 
@@ -148,6 +149,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               AI Invoice Processing System
             </span>
             <div className="ml-auto flex items-center gap-3">
+              <ThemeToggle />
               <span className="text-sm text-muted-foreground">
                 {user?.full_name}
               </span>
