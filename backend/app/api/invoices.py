@@ -242,11 +242,11 @@ async def _process_extraction(
                 )
                 db.add(item)
 
-            invoice.status = "done"
+            # Commit items while status stays "processing" — frontend keeps polling
             invoice.updated_at = datetime.now(timezone.utc)
             await db.commit()
 
-            # Auto-run matching engine after extraction
+            # Auto-run matching engine (status still "processing")
             try:
                 from app.services.matching import match_invoice_items
                 match_summary = await match_invoice_items(invoice_id, db)
@@ -262,6 +262,11 @@ async def _process_extraction(
                     invoice_id,
                     match_err,
                 )
+
+            # Set status to "done" AFTER matching — frontend sees final results
+            invoice.status = "done"
+            invoice.updated_at = datetime.now(timezone.utc)
+            await db.commit()
 
             logger.info(
                 "Extraction complete for invoice %d: %d items extracted",
