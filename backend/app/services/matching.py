@@ -4,7 +4,7 @@ import re
 from collections import Counter
 from decimal import Decimal
 
-from rapidfuzz import fuzz
+from rapidfuzz import fuzz, process as rfprocess
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,9 +17,9 @@ logger = logging.getLogger(__name__)
 BARCODE_CONFIDENCE = Decimal("1.00")
 BARCODE_PARTIAL_CONFIDENCE = Decimal("0.90")
 EXACT_NAME_CONFIDENCE = Decimal("0.95")
-FUZZY_THRESHOLD = 40           # minimum score to consider as a candidate
-AUTO_MATCH_THRESHOLD = 0.65    # above this → auto-matched
-SUGGESTION_THRESHOLD = 0.35    # above this → shown as suggestion
+FUZZY_THRESHOLD = 35           # minimum combined score to keep as candidate
+AUTO_MATCH_THRESHOLD = 0.58    # above this → auto-matched
+SUGGESTION_THRESHOLD = 0.30    # above this → shown as suggestion
 MAX_CANDIDATES = 5             # top N candidates returned per item
 
 # ── Stop words (low-value for matching) ──
@@ -71,8 +71,14 @@ def _normalize_text(text: str) -> str:
     """Normalize text for matching: lowercase, strip noise, expand abbreviations."""
     text = text.strip().lower()
 
-    # Remove packaging multipliers: "1*50", "1x12", "3 x 4", "24's"
-    text = re.sub(r'\d+\s*[*x×]\s*\d+', ' ', text)
+    # Remove trailing pack-size patterns FIRST (before general multiplier removal)
+    # Handles: "product 330 ml * 24", "product 500g * 12", "product 200ml*48", "product * 24"
+    text = re.sub(r'\s*[*x×]\s*\d+\s*$', '', text)
+
+    # Remove packaging multipliers in the middle: "1*50", "1x12", "3 x 4"
+    text = re.sub(r'\b\d+\s*[*x×]\s*\d+\b', ' ', text)
+
+    # Remove trailing count patterns: "24's", "x48", "x 12"
     text = re.sub(r"\d+'s\b", ' ', text)
 
     # Remove parenthesized content like (1*12), (500ML), (PROMO)
@@ -85,6 +91,9 @@ def _normalize_text(text: str) -> str:
     # Only at start or end to avoid stripping from mid-name
     text = re.sub(r'^[a-z]{1,3}[-]?\d{3,}[a-z]?\s+', ' ', text)
     text = re.sub(r'\s+[a-z]{1,3}[-]?\d{3,}[a-z]?$', ' ', text)
+
+    # Remove standalone pure numbers (pack counts, article numbers) but keep sizes like "500g"
+    text = re.sub(r'\b\d+\b(?!\s*(?:ml|g|gm|kg|ltr|lt|l|oz|gram|liter|litre)\b)', ' ', text)
 
     # Normalize whitespace
     text = re.sub(r'\s+', ' ', text).strip()
@@ -242,6 +251,35 @@ def _containment_score(tokens_a: set[str], tokens_b: set[str]) -> float:
 
 
 # ═══════════════════════════════════════════════════════════════
+# Pre-filter: quickly shortlist candidates using rapidfuzz C code
+# ═══════════════════════════════════════════════════════════════
+
+# Number of candidates to pass through the fast pre-filter before full scoring
+PREFILTER_LIMIT = 60
+
+
+def _prefilter_candidates(
+    query: str,
+    choices: dict[int, str],
+) -> list[int]:
+    """Use rapidfuzz.process.extract for a fast C-level shortlist.
+
+    Returns product IDs of the top PREFILTER_LIMIT candidates by token_sort_ratio.
+    This avoids running the expensive multi-signal scorer on all 5000+ products.
+    """
+    if not choices:
+        return []
+    results = rfprocess.extract(
+        query,
+        choices,
+        scorer=fuzz.token_sort_ratio,
+        limit=PREFILTER_LIMIT,
+        score_cutoff=25,  # very low — just eliminate total garbage
+    )
+    return [product_id for _, score, product_id in results]
+
+
+# ═══════════════════════════════════════════════════════════════
 # Combined scoring engine
 # ═══════════════════════════════════════════════════════════════
 
@@ -342,23 +380,31 @@ async def match_invoice_items(
 
     barcode_map: dict[str, Product] = {}
     desc_map: dict[str, Product] = {}
-    all_products: list[Product] = []
+    product_by_id: dict[int, Product] = {}
+    norm_desc_map: dict[int, str] = {}        # product_id → normalized description
+    prefilter_choices: dict[int, str] = {}     # product_id → normalized description (for rfprocess)
 
     for p in products:
         if p.barcode:
             barcode_map[p.barcode.strip()] = p
         desc_map[p.description.strip().lower()] = p
-        all_products.append(p)
+        product_by_id[p.id] = p
+        nd = _normalize_text(p.description)
+        norm_desc_map[p.id] = nd
+        prefilter_choices[p.id] = nd
 
     # Pre-compute IDF for token weighting
-    idf = _build_idf(all_products)
+    idf = _build_idf(products)
 
     matched_count = 0
     unmatched_count = 0
     item_results = []
 
     for item in items:
-        match_result = _match_single_item(item, barcode_map, desc_map, all_products, idf)
+        match_result = _match_single_item(
+            item, barcode_map, desc_map, product_by_id,
+            norm_desc_map, prefilter_choices, idf,
+        )
 
         item.product_id = match_result["product_id"]
         item.matched = match_result["matched"]
@@ -408,12 +454,15 @@ def _match_single_item(
     item: InvoiceItem,
     barcode_map: dict[str, "Product"],
     desc_map: dict[str, "Product"],
-    all_products: list["Product"],
+    product_by_id: dict[int, "Product"],
+    norm_desc_map: dict[int, str],
+    prefilter_choices: dict[int, str],
     idf: dict[str, float],
 ) -> dict:
     """Match a single invoice item against the product database.
 
-    Always returns top candidates so the user can verify or override.
+    Uses a fast pre-filter to shortlist ~60 candidates, then runs the full
+    multi-signal scorer only on those. Always returns top candidates.
     """
     no_match = {
         "product_id": None,
@@ -489,9 +538,10 @@ def _match_single_item(
                             "confidence": 0.95, "method": "exact_name"}],
         }
 
-    # Normalized comparison
-    for desc_key, product in desc_map.items():
-        if _normalize_text(desc_key) == name_normalized:
+    # Normalized comparison against pre-computed descriptions
+    for pid, norm_desc in norm_desc_map.items():
+        if norm_desc == name_normalized:
+            product = product_by_id[pid]
             uom_mismatch = _check_uom_mismatch(item.extracted_uom, product.uom)
             return {
                 "product_id": product.id,
@@ -504,18 +554,21 @@ def _match_single_item(
                                 "confidence": 0.95, "method": "exact_name_normalized"}],
             }
 
-    # --- Priority 4: Multi-signal fuzzy match with candidates ---
-    if not all_products:
+    # --- Priority 4: Pre-filtered multi-signal fuzzy match ---
+    if not prefilter_choices:
         return no_match
+
+    # Fast C-level pre-filter: shortlist ~60 candidates
+    candidate_ids = _prefilter_candidates(name_normalized, prefilter_choices)
 
     scored: list[tuple[float, Product]] = []
 
-    for product in all_products:
-        prod_normalized = _normalize_text(product.description)
+    for pid in candidate_ids:
+        prod_normalized = norm_desc_map[pid]
         score = _compute_match_score(name_normalized, prod_normalized, idf)
 
         if score >= FUZZY_THRESHOLD:
-            scored.append((score, product))
+            scored.append((score, product_by_id[pid]))
 
     scored.sort(key=lambda x: x[0], reverse=True)
     top = scored[:MAX_CANDIDATES]
@@ -564,7 +617,7 @@ async def get_item_suggestions(
 ) -> list[dict]:
     """Get top product suggestions for an invoice item.
 
-    Re-runs the scoring engine for this item and returns top candidates.
+    Uses the same pre-filter → full-score pipeline as the main matching engine.
     """
     item = await db.get(InvoiceItem, item_id)
     if not item or not item.extracted_name:
@@ -578,15 +631,27 @@ async def get_item_suggestions(
     if not products:
         return []
 
+    # Build lookup structures once
     idf = _build_idf(products)
+    prefilter_choices: dict[int, str] = {}
+    norm_map: dict[int, str] = {}
+    product_map: dict[int, Product] = {}
+    for p in products:
+        nd = _normalize_text(p.description)
+        prefilter_choices[p.id] = nd
+        norm_map[p.id] = nd
+        product_map[p.id] = p
+
     name_normalized = _normalize_text(item.extracted_name)
 
+    # Pre-filter then full-score
+    candidate_ids = _prefilter_candidates(name_normalized, prefilter_choices)
+
     scored: list[tuple[float, Product]] = []
-    for product in products:
-        prod_normalized = _normalize_text(product.description)
-        score = _compute_match_score(name_normalized, prod_normalized, idf)
+    for pid in candidate_ids:
+        score = _compute_match_score(name_normalized, norm_map[pid], idf)
         if score >= SUGGESTION_THRESHOLD * 100:
-            scored.append((score, product))
+            scored.append((score, product_map[pid]))
 
     scored.sort(key=lambda x: x[0], reverse=True)
 
