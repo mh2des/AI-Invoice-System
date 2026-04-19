@@ -368,43 +368,21 @@ def _prefilter_candidates(
     query: str,
     choices: dict[int, str],
 ) -> list[int]:
-    """Two-scorer union shortlist for high-recall prefilter.
+    """Use rapidfuzz.process.extract for a fast C-level shortlist.
 
-    Uses BOTH token_sort_ratio (catches reordered words) and token_set_ratio
-    (catches subset/extra-word cases). Union the top results from each so the
-    main multi-signal scorer never misses a strong candidate due to a weak
-    single-scorer prefilter.
-
-    Speed cost: 2× C-level scans of 5000 products = ~10-30ms total (negligible
-    vs the per-pair Python loop savings achieved elsewhere).
+    Returns product IDs of the top PREFILTER_LIMIT candidates by token_sort_ratio.
+    This avoids running the expensive multi-signal scorer on all 5000+ products.
     """
     if not choices:
         return []
-
-    sort_results = rfprocess.extract(
+    results = rfprocess.extract(
         query,
         choices,
         scorer=fuzz.token_sort_ratio,
         limit=PREFILTER_LIMIT,
-        score_cutoff=20,
+        score_cutoff=25,  # very low — just eliminate total garbage
     )
-    set_results = rfprocess.extract(
-        query,
-        choices,
-        scorer=fuzz.token_set_ratio,
-        limit=PREFILTER_LIMIT,
-        score_cutoff=30,
-    )
-
-    # Union by product_id, preserving uniqueness
-    seen: set[int] = set()
-    out: list[int] = []
-    for results in (sort_results, set_results):
-        for _, _score, pid in results:
-            if pid not in seen:
-                seen.add(pid)
-                out.append(pid)
-    return out
+    return [product_id for _, score, product_id in results]
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -423,10 +401,18 @@ def _compute_match_score(
     size_a: tuple[float | None, str | None] | None = None,
     size_b: tuple[float | None, str | None] | None = None,
 ) -> float:
-    """Compute multi-signal score for a single pair (legacy single-call path).
+    """Compute a robust match score between two product names.
 
-    Kept for back-compat / single-pair callers. Hot paths use
-    `_score_candidates_batch` for cdist-batched fuzz scoring.
+    Multi-signal fusion:
+      1. token_sort_ratio — handles reordered words
+      2. token_set_ratio — handles extra/missing words (with guard)
+      3. plain ratio — basic Levenshtein
+      4. IDF-weighted token overlap — distinctive words matter more
+      5. Containment score — handles subset names
+      6. Trigram similarity — resilient to OCR character errors
+      7. Size compatibility penalty
+
+    Accepts optional pre-computed tokens/trigrams/sizes to avoid redundant work.
     """
     t_a = set(tokens_a) if tokens_a is not None else _extract_significant_tokens(name_a)
     t_b = set(tokens_b) if tokens_b is not None else _extract_significant_tokens(name_b)
@@ -496,104 +482,9 @@ def _compute_match_score(
     return combined
 
 
-def _score_candidates_batch(
-    query_normalized: str,
-    candidate_ids: list[int],
-    idx: "_ProductIndex",
-    *,
-    query_tokens: frozenset[str],
-    query_trigrams: frozenset[str],
-    query_size: tuple[float | None, str | None],
-) -> list[tuple[float, int]]:
-    """Multi-signal scoring for a candidate list using batched cdist.
-
-    All fuzz.* scores for the entire candidate list are computed in 3 C calls
-    (one per scorer) instead of N×3 individual calls. Cheap signals (IDF,
-    trigram, containment, size) loop in Python over pre-computed dict lookups.
-
-    Scoring formula, weights and convergence bonus are IDENTICAL to
-    `_compute_match_score`.
-    """
-    if not candidate_ids:
-        return []
-
-    candidate_strs = [idx.norm_desc_map[pid] for pid in candidate_ids]
-
-    # Batched C-level fuzz scoring (cdist returns 2D matrix; we want row 0)
-    sort_row = rfprocess.cdist(
-        [query_normalized], candidate_strs, scorer=fuzz.token_sort_ratio
-    )[0]
-    set_row = rfprocess.cdist(
-        [query_normalized], candidate_strs, scorer=fuzz.token_set_ratio
-    )[0]
-    plain_row = rfprocess.cdist(
-        [query_normalized], candidate_strs, scorer=fuzz.ratio
-    )[0]
-
-    out: list[tuple[float, int]] = []
-    has_query_size = query_size[0] is not None
-
-    for i, pid in enumerate(candidate_ids):
-        sort_score = float(sort_row[i])
-        set_score = float(set_row[i])
-        plain_score = float(plain_row[i])
-
-        t_b = idx.product_tokens[pid]
-
-        # Guard token_set_ratio (same logic as _compute_match_score)
-        if query_tokens and t_b:
-            overlap = query_tokens & t_b
-            min_overlap = min(
-                len(overlap) / len(query_tokens),
-                len(overlap) / len(t_b),
-            )
-            if min_overlap < 0.3:
-                set_score = min(set_score, sort_score)
-        else:
-            set_score = 0.0
-
-        # Token-based scores (IDF + containment) — pre-computed sets
-        idf_score = _weighted_token_overlap(query_tokens, t_b, idx.idf)
-        contain_score = _containment_score(query_tokens, t_b)
-
-        # Trigram similarity (pre-computed sets)
-        trigram_score = _trigram_similarity_fast(
-            query_trigrams, idx.product_trigrams[pid]
-        )
-
-        # Combine: identical formula
-        fuzzy_best = max(sort_score, set_score, plain_score)
-        token_best = max(idf_score, contain_score)
-        combined = fuzzy_best * 0.50 + token_best * 0.30 + trigram_score * 0.20
-
-        # Convergence bonus
-        strong_signals = sum(
-            1 for s in (fuzzy_best, token_best, trigram_score) if s >= 60
-        )
-        if strong_signals >= 2:
-            combined *= 1.10
-        if strong_signals >= 3:
-            combined *= 1.05
-
-        if combined > 99.0:
-            combined = 99.0
-
-        # Size penalty (identical to _compute_match_score)
-        if has_query_size:
-            s_b, cat_b = idx.product_sizes[pid]
-            s_a, cat_a = query_size
-            if s_b is not None and cat_a == cat_b:
-                if s_a == 0 or s_b == 0:
-                    if s_a != s_b:
-                        combined *= 0.4
-                else:
-                    ratio = max(s_a, s_b) / min(s_a, s_b)
-                    if ratio > 1.2:
-                        combined *= 0.4
-
-        out.append((combined, pid))
-
-    return out
+# ═══════════════════════════════════════════════════════════════
+# Main matching engine
+# ═══════════════════════════════════════════════════════════════
 
 async def match_invoice_items(
     invoice_id: int,
@@ -771,20 +662,25 @@ def _match_single_item(
     query_trigrams = _compute_trigrams(name_normalized)
     query_size = _extract_size(name_normalized)
 
-    # Fast C-level pre-filter: shortlist ~60-120 candidates (two-scorer union)
+    # Fast C-level pre-filter: shortlist ~60 candidates
     candidate_ids = _prefilter_candidates(name_normalized, idx.prefilter_choices)
 
-    # Batched scoring (cdist for fuzz, dict lookups for cheap signals)
-    raw_scored = _score_candidates_batch(
-        name_normalized, candidate_ids, idx,
-        query_tokens=query_tokens,
-        query_trigrams=query_trigrams,
-        query_size=query_size,
-    )
+    scored: list[tuple[float, Product]] = []
 
-    scored: list[tuple[float, Product]] = [
-        (s, idx.product_by_id[pid]) for s, pid in raw_scored if s >= FUZZY_THRESHOLD
-    ]
+    for pid in candidate_ids:
+        score = _compute_match_score(
+            name_normalized,
+            idx.norm_desc_map[pid],
+            idx.idf,
+            tokens_a=query_tokens,
+            tokens_b=idx.product_tokens[pid],
+            trigrams_a=query_trigrams,
+            trigrams_b=idx.product_trigrams[pid],
+            size_a=query_size,
+            size_b=idx.product_sizes[pid],
+        )
+        if score >= FUZZY_THRESHOLD:
+            scored.append((score, idx.product_by_id[pid]))
 
     scored.sort(key=lambda x: x[0], reverse=True)
     top = scored[:MAX_CANDIDATES]
@@ -888,17 +784,22 @@ def _score_suggestions(
 
     candidate_ids = _prefilter_candidates(name_normalized, idx.prefilter_choices)
 
-    raw_scored = _score_candidates_batch(
-        name_normalized, candidate_ids, idx,
-        query_tokens=query_tokens,
-        query_trigrams=query_trigrams,
-        query_size=query_size,
-    )
+    scored: list[tuple[float, Product]] = []
+    for pid in candidate_ids:
+        score = _compute_match_score(
+            name_normalized,
+            idx.norm_desc_map[pid],
+            idx.idf,
+            tokens_a=query_tokens,
+            tokens_b=idx.product_tokens[pid],
+            trigrams_a=query_trigrams,
+            trigrams_b=idx.product_trigrams[pid],
+            size_a=query_size,
+            size_b=idx.product_sizes[pid],
+        )
+        if score >= SUGGESTION_THRESHOLD * 100:
+            scored.append((score, idx.product_by_id[pid]))
 
-    threshold = SUGGESTION_THRESHOLD * 100
-    scored: list[tuple[float, Product]] = [
-        (s, idx.product_by_id[pid]) for s, pid in raw_scored if s >= threshold
-    ]
     scored.sort(key=lambda x: x[0], reverse=True)
 
     return [
