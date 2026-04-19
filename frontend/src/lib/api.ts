@@ -243,6 +243,12 @@ export async function getItemSuggestions(
   );
 }
 
+export async function getInvoiceSuggestions(invoiceId: number) {
+  return request<Record<string, import("./types").ProductSuggestion[]>>(
+    `/invoices/${invoiceId}/suggestions`
+  );
+}
+
 // ── Reports ──
 export async function generateReport(invoiceId: number) {
   const res = await fetch(`${API_BASE}/reports/invoices/${invoiceId}/generate-report`, {

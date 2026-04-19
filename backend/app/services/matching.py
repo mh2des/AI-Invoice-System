@@ -1,11 +1,13 @@
 import logging
 import math
 import re
+import time
+import threading
 from collections import Counter
 from decimal import Decimal
 
 from rapidfuzz import fuzz, process as rfprocess
-from sqlalchemy import select
+from sqlalchemy import select, func as sqlfunc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.invoice_item import InvoiceItem
@@ -173,30 +175,134 @@ def _trigram_similarity(s1: str, s2: str) -> float:
     return (len(overlap) / len(union)) * 100 if union else 0.0
 
 
+def _compute_trigrams(s: str) -> frozenset[str]:
+    """Pre-compute character trigram set for a string."""
+    n = 3
+    if len(s) < n:
+        return frozenset()
+    return frozenset(s[i:i + n] for i in range(len(s) - n + 1))
+
+
+def _trigram_similarity_fast(
+    query_trigrams: frozenset[str],
+    product_trigrams: frozenset[str],
+) -> float:
+    """Trigram Jaccard using pre-computed sets (0-100)."""
+    if not query_trigrams or not product_trigrams:
+        return 0.0
+    overlap = query_trigrams & product_trigrams
+    union = query_trigrams | product_trigrams
+    return (len(overlap) / len(union)) * 100 if union else 0.0
+
+
 # ═══════════════════════════════════════════════════════════════
 # Token importance weighting (lightweight IDF)
 # ═══════════════════════════════════════════════════════════════
 
-def _build_idf(products: list["Product"]) -> dict[str, float]:
-    """Build inverse document frequency map from product descriptions.
-
-    Rare tokens (brand names, specific flavours) get high IDF.
-    Common tokens (juice, drink, water) get low IDF.
-    """
-    doc_count = len(products)
+def _build_idf_from_tokens(
+    product_tokens: dict[int, frozenset[str]],
+    doc_count: int,
+) -> dict[str, float]:
+    """Build IDF map from pre-computed token sets."""
     if doc_count == 0:
         return {}
-
     df: Counter = Counter()
-    for p in products:
-        tokens = _extract_significant_tokens(_normalize_text(p.description))
+    for tokens in product_tokens.values():
         for t in tokens:
             df[t] += 1
+    return {
+        token: math.log(doc_count / freq)
+        for token, freq in df.items()
+        if freq > 0
+    }
 
-    idf = {}
-    for token, freq in df.items():
-        idf[token] = math.log(doc_count / freq) if freq > 0 else 0
-    return idf
+
+# ═══════════════════════════════════════════════════════════════
+# Product Index — pre-computed data structures cached in memory
+# ═══════════════════════════════════════════════════════════════
+
+_INDEX_TTL = 300  # seconds (5 minutes)
+_cached_index: "_ProductIndex | None" = None
+_index_lock = threading.Lock()
+
+
+class _ProductIndex:
+    """All pre-computed product data for fast matching.
+
+    Built once, cached at module level, reused across requests.
+    Avoids re-normalizing, re-tokenizing, and re-computing IDF for every call.
+    """
+
+    def __init__(self, products: list["Product"]):
+        self.built_at = time.monotonic()
+        self.product_count = len(products)
+
+        self.barcode_map: dict[str, Product] = {}
+        self.desc_map: dict[str, Product] = {}
+        self.product_by_id: dict[int, Product] = {}
+        self.norm_desc_map: dict[int, str] = {}
+        self.norm_to_product: dict[str, Product] = {}  # normalized → product (O(1) lookup)
+        self.prefilter_choices: dict[int, str] = {}
+        self.product_tokens: dict[int, frozenset[str]] = {}
+        self.product_trigrams: dict[int, frozenset[str]] = {}
+        self.product_sizes: dict[int, tuple[float | None, str | None]] = {}
+
+        for p in products:
+            if p.barcode:
+                self.barcode_map[p.barcode.strip()] = p
+            self.desc_map[p.description.strip().lower()] = p
+            self.product_by_id[p.id] = p
+
+            nd = _normalize_text(p.description)
+            self.norm_desc_map[p.id] = nd
+            self.norm_to_product[nd] = p
+            self.prefilter_choices[p.id] = nd
+            self.product_tokens[p.id] = frozenset(_extract_significant_tokens(nd))
+            self.product_trigrams[p.id] = _compute_trigrams(nd)
+            self.product_sizes[p.id] = _extract_size(nd)
+
+        self.idf = _build_idf_from_tokens(self.product_tokens, self.product_count)
+
+    def is_stale(self) -> bool:
+        return (time.monotonic() - self.built_at) > _INDEX_TTL
+
+
+async def _get_or_build_index(db: AsyncSession) -> "_ProductIndex":
+    """Return cached product index, rebuilding if stale or product count changed."""
+    global _cached_index
+
+    # Quick check without lock
+    if _cached_index is not None and not _cached_index.is_stale():
+        return _cached_index
+
+    # Check if product count changed (fast DB query)
+    count_result = await db.execute(
+        select(sqlfunc.count()).select_from(Product).where(Product.is_active == True)  # noqa: E712
+    )
+    current_count = count_result.scalar() or 0
+
+    with _index_lock:
+        # Double-check after acquiring lock
+        if (
+            _cached_index is not None
+            and not _cached_index.is_stale()
+            and _cached_index.product_count == current_count
+        ):
+            return _cached_index
+
+        # Rebuild
+        prod_result = await db.execute(
+            select(Product).where(Product.is_active == True)  # noqa: E712
+        )
+        products = prod_result.scalars().all()
+
+        _cached_index = _ProductIndex(products)
+        logger.info(
+            "Product index rebuilt: %d products, IDF with %d tokens",
+            _cached_index.product_count,
+            len(_cached_index.idf),
+        )
+        return _cached_index
 
 
 def _weighted_token_overlap(
@@ -287,6 +393,13 @@ def _compute_match_score(
     name_a: str,
     name_b: str,
     idf: dict[str, float],
+    *,
+    tokens_a: frozenset[str] | None = None,
+    tokens_b: frozenset[str] | None = None,
+    trigrams_a: frozenset[str] | None = None,
+    trigrams_b: frozenset[str] | None = None,
+    size_a: tuple[float | None, str | None] | None = None,
+    size_b: tuple[float | None, str | None] | None = None,
 ) -> float:
     """Compute a robust match score between two product names.
 
@@ -298,20 +411,22 @@ def _compute_match_score(
       5. Containment score — handles subset names
       6. Trigram similarity — resilient to OCR character errors
       7. Size compatibility penalty
-    """
-    tokens_a = _extract_significant_tokens(name_a)
-    tokens_b = _extract_significant_tokens(name_b)
 
-    # --- Fuzzy string scores ---
+    Accepts optional pre-computed tokens/trigrams/sizes to avoid redundant work.
+    """
+    t_a = set(tokens_a) if tokens_a is not None else _extract_significant_tokens(name_a)
+    t_b = set(tokens_b) if tokens_b is not None else _extract_significant_tokens(name_b)
+
+    # --- Fuzzy string scores (C-level, fast) ---
     sort_score = fuzz.token_sort_ratio(name_a, name_b)
     set_score = fuzz.token_set_ratio(name_a, name_b)
     plain_score = fuzz.ratio(name_a, name_b)
 
     # Guard token_set_ratio with softer threshold
-    overlap = tokens_a & tokens_b
-    if tokens_a and tokens_b:
-        overlap_ratio_a = len(overlap) / len(tokens_a)
-        overlap_ratio_b = len(overlap) / len(tokens_b)
+    overlap = t_a & t_b
+    if t_a and t_b:
+        overlap_ratio_a = len(overlap) / len(t_a)
+        overlap_ratio_b = len(overlap) / len(t_b)
         min_overlap = min(overlap_ratio_a, overlap_ratio_b)
 
         if min_overlap < 0.3:
@@ -320,11 +435,14 @@ def _compute_match_score(
         set_score = 0
 
     # --- Token-based scores ---
-    idf_score = _weighted_token_overlap(tokens_a, tokens_b, idf)
-    contain_score = _containment_score(tokens_a, tokens_b)
+    idf_score = _weighted_token_overlap(t_a, t_b, idf)
+    contain_score = _containment_score(t_a, t_b)
 
-    # --- Character-level score ---
-    trigram_score = _trigram_similarity(name_a, name_b)
+    # --- Character-level score (use pre-computed if available) ---
+    if trigrams_a is not None and trigrams_b is not None:
+        trigram_score = _trigram_similarity_fast(trigrams_a, trigrams_b)
+    else:
+        trigram_score = _trigram_similarity(name_a, name_b)
 
     # --- Combine: best of each signal family ---
     fuzzy_best = max(sort_score, set_score, plain_score)
@@ -345,9 +463,21 @@ def _compute_match_score(
 
     combined = min(combined, 99.0)
 
-    # Size penalty
-    if not _size_compatible(name_a, name_b):
-        combined = combined * 0.4
+    # Size penalty (use pre-computed if available)
+    if size_a is not None and size_b is not None:
+        s_a, cat_a = size_a
+        s_b, cat_b = size_b
+        if s_a is not None and s_b is not None and cat_a == cat_b:
+            if s_a == 0 or s_b == 0:
+                if s_a != s_b:
+                    combined = combined * 0.4
+            else:
+                ratio = max(s_a, s_b) / min(s_a, s_b)
+                if ratio > 1.2:
+                    combined = combined * 0.4
+    else:
+        if not _size_compatible(name_a, name_b):
+            combined = combined * 0.4
 
     return combined
 
@@ -362,7 +492,7 @@ async def match_invoice_items(
 ) -> dict:
     """Run the matching engine on all items of an invoice.
 
-    Returns a summary dict with match statistics and top candidates per item.
+    Uses cached ProductIndex for fast lookups. Rebuilds index only if stale.
     """
     result = await db.execute(
         select(InvoiceItem).where(InvoiceItem.invoice_id == invoice_id)
@@ -373,38 +503,14 @@ async def match_invoice_items(
     if not items:
         return {"total": 0, "matched": 0, "unmatched": 0, "items": []}
 
-    prod_result = await db.execute(
-        select(Product).where(Product.is_active == True)  # noqa: E712
-    )
-    products = prod_result.scalars().all()
-
-    barcode_map: dict[str, Product] = {}
-    desc_map: dict[str, Product] = {}
-    product_by_id: dict[int, Product] = {}
-    norm_desc_map: dict[int, str] = {}        # product_id → normalized description
-    prefilter_choices: dict[int, str] = {}     # product_id → normalized description (for rfprocess)
-
-    for p in products:
-        if p.barcode:
-            barcode_map[p.barcode.strip()] = p
-        desc_map[p.description.strip().lower()] = p
-        product_by_id[p.id] = p
-        nd = _normalize_text(p.description)
-        norm_desc_map[p.id] = nd
-        prefilter_choices[p.id] = nd
-
-    # Pre-compute IDF for token weighting
-    idf = _build_idf(products)
+    idx = await _get_or_build_index(db)
 
     matched_count = 0
     unmatched_count = 0
     item_results = []
 
     for item in items:
-        match_result = _match_single_item(
-            item, barcode_map, desc_map, product_by_id,
-            norm_desc_map, prefilter_choices, idf,
-        )
+        match_result = _match_single_item(item, idx)
 
         item.product_id = match_result["product_id"]
         item.matched = match_result["matched"]
@@ -452,17 +558,11 @@ async def match_invoice_items(
 
 def _match_single_item(
     item: InvoiceItem,
-    barcode_map: dict[str, "Product"],
-    desc_map: dict[str, "Product"],
-    product_by_id: dict[int, "Product"],
-    norm_desc_map: dict[int, str],
-    prefilter_choices: dict[int, str],
-    idf: dict[str, float],
+    idx: _ProductIndex,
 ) -> dict:
-    """Match a single invoice item against the product database.
+    """Match a single invoice item using the cached ProductIndex.
 
-    Uses a fast pre-filter to shortlist ~60 candidates, then runs the full
-    multi-signal scorer only on those. Always returns top candidates.
+    Pre-filter → full multi-signal scoring with pre-computed data.
     """
     no_match = {
         "product_id": None,
@@ -477,8 +577,8 @@ def _match_single_item(
     # --- Priority 1: Exact barcode match ---
     if item.extracted_barcode:
         barcode = item.extracted_barcode.strip()
-        if barcode in barcode_map:
-            product = barcode_map[barcode]
+        if barcode in idx.barcode_map:
+            product = idx.barcode_map[barcode]
             uom_mismatch = _check_uom_mismatch(item.extracted_uom, product.uom)
             return {
                 "product_id": product.id,
@@ -493,7 +593,7 @@ def _match_single_item(
 
         # --- Priority 2: Partial barcode match ---
         if len(barcode) >= 4:
-            for db_barcode, product in barcode_map.items():
+            for db_barcode, product in idx.barcode_map.items():
                 if (
                     db_barcode.startswith(barcode)
                     or db_barcode.endswith(barcode)
@@ -523,9 +623,9 @@ def _match_single_item(
     name_lower = name.lower()
     name_normalized = _normalize_text(name)
 
-    # --- Priority 3: Exact description match (case-insensitive) ---
-    if name_lower in desc_map:
-        product = desc_map[name_lower]
+    # --- Priority 3a: Exact description match (case-insensitive, O(1)) ---
+    if name_lower in idx.desc_map:
+        product = idx.desc_map[name_lower]
         uom_mismatch = _check_uom_mismatch(item.extracted_uom, product.uom)
         return {
             "product_id": product.id,
@@ -538,37 +638,49 @@ def _match_single_item(
                             "confidence": 0.95, "method": "exact_name"}],
         }
 
-    # Normalized comparison against pre-computed descriptions
-    for pid, norm_desc in norm_desc_map.items():
-        if norm_desc == name_normalized:
-            product = product_by_id[pid]
-            uom_mismatch = _check_uom_mismatch(item.extracted_uom, product.uom)
-            return {
-                "product_id": product.id,
-                "matched": True,
-                "confidence": EXACT_NAME_CONFIDENCE,
-                "method": "exact_name_normalized",
-                "product_name": product.description,
-                "uom_mismatch": uom_mismatch,
-                "candidates": [{"product_id": product.id, "product_name": product.description,
-                                "confidence": 0.95, "method": "exact_name_normalized"}],
-            }
+    # --- Priority 3b: Normalized exact match (O(1) dict lookup) ---
+    if name_normalized in idx.norm_to_product:
+        product = idx.norm_to_product[name_normalized]
+        uom_mismatch = _check_uom_mismatch(item.extracted_uom, product.uom)
+        return {
+            "product_id": product.id,
+            "matched": True,
+            "confidence": EXACT_NAME_CONFIDENCE,
+            "method": "exact_name_normalized",
+            "product_name": product.description,
+            "uom_mismatch": uom_mismatch,
+            "candidates": [{"product_id": product.id, "product_name": product.description,
+                            "confidence": 0.95, "method": "exact_name_normalized"}],
+        }
 
     # --- Priority 4: Pre-filtered multi-signal fuzzy match ---
-    if not prefilter_choices:
+    if not idx.prefilter_choices:
         return no_match
 
+    # Pre-compute query-side data once per item
+    query_tokens = frozenset(_extract_significant_tokens(name_normalized))
+    query_trigrams = _compute_trigrams(name_normalized)
+    query_size = _extract_size(name_normalized)
+
     # Fast C-level pre-filter: shortlist ~60 candidates
-    candidate_ids = _prefilter_candidates(name_normalized, prefilter_choices)
+    candidate_ids = _prefilter_candidates(name_normalized, idx.prefilter_choices)
 
     scored: list[tuple[float, Product]] = []
 
     for pid in candidate_ids:
-        prod_normalized = norm_desc_map[pid]
-        score = _compute_match_score(name_normalized, prod_normalized, idf)
-
+        score = _compute_match_score(
+            name_normalized,
+            idx.norm_desc_map[pid],
+            idx.idf,
+            tokens_a=query_tokens,
+            tokens_b=idx.product_tokens[pid],
+            trigrams_a=query_trigrams,
+            trigrams_b=idx.product_trigrams[pid],
+            size_a=query_size,
+            size_b=idx.product_sizes[pid],
+        )
         if score >= FUZZY_THRESHOLD:
-            scored.append((score, product_by_id[pid]))
+            scored.append((score, idx.product_by_id[pid]))
 
     scored.sort(key=lambda x: x[0], reverse=True)
     top = scored[:MAX_CANDIDATES]
@@ -615,57 +727,91 @@ async def get_item_suggestions(
     db: AsyncSession,
     limit: int = 10,
 ) -> list[dict]:
-    """Get top product suggestions for an invoice item.
+    """Get top product suggestions for a single invoice item.
 
-    Uses the same pre-filter → full-score pipeline as the main matching engine.
+    Uses cached ProductIndex — no redundant rebuilds.
     """
     item = await db.get(InvoiceItem, item_id)
     if not item or not item.extracted_name:
         return []
 
-    prod_result = await db.execute(
-        select(Product).where(Product.is_active == True)  # noqa: E712
+    idx = await _get_or_build_index(db)
+    return _score_suggestions(item.extracted_name, idx, limit)
+
+
+async def get_invoice_suggestions(
+    invoice_id: int,
+    db: AsyncSession,
+    limit: int = 10,
+) -> dict[int, list[dict]]:
+    """Get suggestions for ALL unmatched items of an invoice in one call.
+
+    Returns {item_id: [suggestions...]} — eliminates N separate API calls.
+    """
+    result = await db.execute(
+        select(InvoiceItem).where(
+            InvoiceItem.invoice_id == invoice_id,
+            InvoiceItem.matched == False,  # noqa: E712
+        )
     )
-    products = prod_result.scalars().all()
+    unmatched_items = result.scalars().all()
 
-    if not products:
-        return []
+    if not unmatched_items:
+        return {}
 
-    # Build lookup structures once
-    idf = _build_idf(products)
-    prefilter_choices: dict[int, str] = {}
-    norm_map: dict[int, str] = {}
-    product_map: dict[int, Product] = {}
-    for p in products:
-        nd = _normalize_text(p.description)
-        prefilter_choices[p.id] = nd
-        norm_map[p.id] = nd
-        product_map[p.id] = p
+    idx = await _get_or_build_index(db)
+    suggestions_map: dict[int, list[dict]] = {}
 
-    name_normalized = _normalize_text(item.extracted_name)
+    for item in unmatched_items:
+        if not item.extracted_name:
+            suggestions_map[item.id] = []
+            continue
+        suggestions_map[item.id] = _score_suggestions(item.extracted_name, idx, limit)
 
-    # Pre-filter then full-score
-    candidate_ids = _prefilter_candidates(name_normalized, prefilter_choices)
+    return suggestions_map
+
+
+def _score_suggestions(
+    extracted_name: str,
+    idx: _ProductIndex,
+    limit: int,
+) -> list[dict]:
+    """Score and rank product suggestions using the cached index."""
+    name_normalized = _normalize_text(extracted_name)
+    query_tokens = frozenset(_extract_significant_tokens(name_normalized))
+    query_trigrams = _compute_trigrams(name_normalized)
+    query_size = _extract_size(name_normalized)
+
+    candidate_ids = _prefilter_candidates(name_normalized, idx.prefilter_choices)
 
     scored: list[tuple[float, Product]] = []
     for pid in candidate_ids:
-        score = _compute_match_score(name_normalized, norm_map[pid], idf)
+        score = _compute_match_score(
+            name_normalized,
+            idx.norm_desc_map[pid],
+            idx.idf,
+            tokens_a=query_tokens,
+            tokens_b=idx.product_tokens[pid],
+            trigrams_a=query_trigrams,
+            trigrams_b=idx.product_trigrams[pid],
+            size_a=query_size,
+            size_b=idx.product_sizes[pid],
+        )
         if score >= SUGGESTION_THRESHOLD * 100:
-            scored.append((score, product_map[pid]))
+            scored.append((score, idx.product_by_id[pid]))
 
     scored.sort(key=lambda x: x[0], reverse=True)
 
-    suggestions = []
-    for score, product in scored[:limit]:
-        suggestions.append({
+    return [
+        {
             "product_id": product.id,
             "product_name": product.description,
             "barcode": product.barcode,
             "uom": product.uom,
             "confidence": round(score / 100, 2),
-        })
-
-    return suggestions
+        }
+        for score, product in scored[:limit]
+    ]
 
 
 # ═══════════════════════════════════════════════════════════════

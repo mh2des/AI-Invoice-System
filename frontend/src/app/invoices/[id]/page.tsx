@@ -7,7 +7,7 @@ import {
   reprocessInvoice,
   matchInvoice,
   manualMatchItem,
-  getItemSuggestions,
+  getInvoiceSuggestions,
   generateReport,
   getProducts,
 } from "@/lib/api";
@@ -108,25 +108,36 @@ export default function InvoiceDetailPage() {
     getProducts({ limit: 5000 }).then(setProducts).catch(console.error);
   }, [fetchInvoice]);
 
-  // Auto-load suggestions for unmatched items
+  // Auto-load suggestions for unmatched items (single batch call)
   useEffect(() => {
     if (!invoice || invoice.status !== "done") return;
-    const unmatchedItems = invoice.items.filter(
-      (i) => !i.matched && i.extracted_name && !suggestions[i.id] && !loadingSuggestions[i.id]
+    const hasUnmatched = invoice.items.some(
+      (i) => !i.matched && i.extracted_name
     );
-    if (unmatchedItems.length === 0) return;
+    // Only fetch once — skip if we already have suggestions loaded
+    const alreadyLoaded = Object.keys(suggestions).length > 0;
+    if (!hasUnmatched || alreadyLoaded) return;
 
-    for (const item of unmatchedItems) {
-      setLoadingSuggestions((prev) => ({ ...prev, [item.id]: true }));
-      getItemSuggestions(Number(id), item.id)
-        .then((data) => {
-          setSuggestions((prev) => ({ ...prev, [item.id]: data }));
-        })
-        .catch(console.error)
-        .finally(() => {
-          setLoadingSuggestions((prev) => ({ ...prev, [item.id]: false }));
-        });
+    // Mark all unmatched as loading
+    const loadingState: Record<number, boolean> = {};
+    for (const item of invoice.items) {
+      if (!item.matched && item.extracted_name) loadingState[item.id] = true;
     }
+    setLoadingSuggestions(loadingState);
+
+    getInvoiceSuggestions(Number(id))
+      .then((data) => {
+        // data keys are string item IDs from JSON
+        const parsed: Record<number, ProductSuggestion[]> = {};
+        for (const [key, val] of Object.entries(data)) {
+          parsed[Number(key)] = val;
+        }
+        setSuggestions(parsed);
+      })
+      .catch(console.error)
+      .finally(() => {
+        setLoadingSuggestions({});
+      });
   }, [invoice, id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -139,6 +150,7 @@ export default function InvoiceDetailPage() {
     setActionLoading("reprocess");
     try {
       await reprocessInvoice(Number(id));
+      setSuggestions({});
       await fetchInvoice();
     } catch (err) {
       console.error(err);
@@ -152,6 +164,7 @@ export default function InvoiceDetailPage() {
     setActionLoading("match");
     try {
       await matchInvoice(Number(id));
+      setSuggestions({});
       await fetchInvoice();
     } catch (err) {
       console.error(err);

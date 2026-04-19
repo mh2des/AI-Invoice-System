@@ -446,3 +446,26 @@ async def get_suggestions(
 
     suggestions = await get_item_suggestions(item_id, db, limit=10)
     return suggestions
+
+
+@router.get(
+    "/{invoice_id}/suggestions",
+    response_model=dict[str, list[ProductSuggestion]],
+)
+async def get_batch_suggestions(
+    invoice_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get suggestions for ALL unmatched items of an invoice in one call.
+
+    Returns {item_id: [suggestions...]}. Much faster than N separate calls.
+    """
+    from app.services.matching import get_invoice_suggestions
+
+    invoice = await db.get(Invoice, invoice_id)
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    suggestions_map = await get_invoice_suggestions(invoice_id, db, limit=10)
+    # Convert int keys to string keys for JSON serialization
+    return {str(k): v for k, v in suggestions_map.items()}
