@@ -486,8 +486,23 @@ export default function InvoiceDetailPage() {
                             </div>
                           )}
                         </TableCell>
-                        <TableCell className="font-mono text-xs text-muted-foreground">
-                          {item.extracted_barcode || "—"}
+                        <TableCell className="font-mono text-xs">
+                          {(() => {
+                            const matchedProduct = item.matched && item.product_id
+                              ? products.find((p) => p.id === item.product_id)
+                              : null;
+                            const dbBarcode = matchedProduct?.barcode;
+                            const extracted = item.extracted_barcode;
+
+                            if (dbBarcode) {
+                              return (
+                                <span className="text-foreground">{dbBarcode}</span>
+                              );
+                            }
+                            return (
+                              <span className="text-muted-foreground">{extracted || "—"}</span>
+                            );
+                          })()}
                         </TableCell>
                         <TableCell className="text-right">
                           {item.extracted_qty != null
